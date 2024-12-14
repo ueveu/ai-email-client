@@ -55,7 +55,14 @@ class ShortcutService(QObject):
         'attach_file': 'Ctrl+Shift+A',
         'attach_preview': 'Space',
         'attach_save': 'Ctrl+Shift+S',
-        'attach_save_all': 'Ctrl+Shift+Alt+S'
+        'attach_save_all': 'Ctrl+Shift+Alt+S',
+        
+        # Status bar and notifications
+        'toggle_notifications': 'Ctrl+Alt+N',  # Toggle notifications panel
+        'toggle_operations': 'Ctrl+Alt+O',     # Toggle operations panel
+        'clear_notifications': 'Ctrl+Alt+C',   # Clear all notifications
+        'cancel_operation': 'Ctrl+Alt+X',      # Cancel current operation
+        'toggle_status_bar': 'Ctrl+Alt+S'      # Toggle entire status bar
     }
     
     def __init__(self, parent=None):
@@ -213,7 +220,8 @@ class ShortcutService(QObject):
             'Email Operations': [],
             'Navigation': [],
             'AI Features': [],
-            'Attachments': []
+            'Attachments': [],
+            'Status Bar': []  # New category for status bar shortcuts
         }
         
         for action, sequence in self.shortcut_configs.items():
@@ -227,6 +235,8 @@ class ShortcutService(QObject):
                 categories['AI Features'].append((action, sequence))
             elif action.startswith('attach_'):
                 categories['Attachments'].append((action, sequence))
+            elif action.startswith('toggle_') or action in ['clear_notifications', 'cancel_operation']:
+                categories['Status Bar'].append((action, sequence))
         
         return categories
     
@@ -279,7 +289,14 @@ class ShortcutService(QObject):
             'attach_file': 'Attach File',
             'attach_preview': 'Preview Attachment',
             'attach_save': 'Save Attachment',
-            'attach_save_all': 'Save All Attachments'
+            'attach_save_all': 'Save All Attachments',
+            
+            # Status bar
+            'toggle_notifications': 'Toggle Notifications Panel',
+            'toggle_operations': 'Toggle Operations Panel',
+            'clear_notifications': 'Clear All Notifications',
+            'cancel_operation': 'Cancel Current Operation',
+            'toggle_status_bar': 'Toggle Status Bar'
         }
         
         return descriptions.get(action, action.replace('_', ' ').title()) 
