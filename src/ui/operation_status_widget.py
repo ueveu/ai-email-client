@@ -5,7 +5,7 @@ Widget for displaying active email operations and their progress.
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                            QPushButton, QProgressBar)
 from PyQt6.QtCore import Qt, pyqtSlot
-from services.email_operation_service import EmailOperationService
+from services.email_operation_service import EmailOperationService, OperationType
 import qtawesome as qta
 
 class OperationStatusWidget(QWidget):
@@ -17,7 +17,7 @@ class OperationStatusWidget(QWidget):
         
         # Connect signals
         self.operation_service.operation_started.connect(self.on_operation_started)
-        self.operation_service.operation_progress.connect(self.on_operation_progress)
+        self.operation_service.operation_updated.connect(self.on_operation_progress)
         self.operation_service.operation_completed.connect(self.on_operation_completed)
         
         self.operation_widgets = {}  # operation_id -> widget mapping
@@ -53,8 +53,8 @@ class OperationStatusWidget(QWidget):
         layout.addWidget(self.container)
         layout.addStretch()
     
-    @pyqtSlot(str, str)
-    def on_operation_started(self, operation_id: str, operation_type: str):
+    @pyqtSlot(str, OperationType)
+    def on_operation_started(self, operation_id: str, operation_type: OperationType):
         """Handle new operation started."""
         # Create operation widget
         widget = QWidget()
@@ -67,14 +67,24 @@ class OperationStatusWidget(QWidget):
         
         # Operation icon and title
         icon_map = {
-            "send": "fa.paper-plane",
-            "fetch": "fa.download",
-            "sync": "fa.refresh"
+            OperationType.SEND: "fa.paper-plane",
+            OperationType.FETCH: "fa.download",
+            OperationType.SYNC: "fa.refresh",
+            OperationType.MOVE: "fa.arrows",
+            OperationType.DELETE: "fa.trash",
+            OperationType.SEARCH: "fa.search",
+            OperationType.ATTACHMENT: "fa.paperclip",
+            OperationType.FOLDER: "fa.folder"
         }
         title_map = {
-            "send": "Sending Email",
-            "fetch": "Fetching Emails",
-            "sync": "Synchronizing Folder"
+            OperationType.SEND: "Sending Email",
+            OperationType.FETCH: "Fetching Emails",
+            OperationType.SYNC: "Synchronizing Folder",
+            OperationType.MOVE: "Moving Email",
+            OperationType.DELETE: "Deleting Email",
+            OperationType.SEARCH: "Searching Emails",
+            OperationType.ATTACHMENT: "Processing Attachment",
+            OperationType.FOLDER: "Managing Folder"
         }
         
         icon = qta.icon(icon_map.get(operation_type, "fa.cog"))

@@ -1,11 +1,18 @@
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QLineEdit,
                            QPushButton, QSpinBox, QCheckBox, QMessageBox,
-                           QHBoxLayout, QLabel)
+                           QHBoxLayout, QLabel, QInputDialog, QGroupBox,
+                           QStatusBar)
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QIcon
+import re
 from email_providers import EmailProviders, Provider
 from services.credential_service import CredentialService
 from utils.logger import logger
 from utils.error_handler import handle_errors
+import imaplib
+import smtplib
+import ssl
+from PyQt6.QtWidgets import QApplication
 
 class EmailAccountDialog(QDialog):
     """Dialog for adding or editing email account settings."""
@@ -34,107 +41,241 @@ class EmailAccountDialog(QDialog):
         # Create form layout for inputs
         form = QFormLayout()
         
-        # Email input
-        self.email_input = QLineEdit()
-        self.email_input.textChanged.connect(self.on_email_changed)
-        form.addRow("Email:", self.email_input)
+        # Quick setup section with improved styling and tooltips
+        quick_setup_group = QGroupBox("Quick Setup")
+        quick_setup_layout = QVBoxLayout()
         
-        # Quick setup buttons for providers
+        quick_setup_label = QLabel("Choose your email provider for automatic setup:")
+        quick_setup_label.setWordWrap(True)
+        quick_setup_layout.addWidget(quick_setup_label)
+        
         provider_layout = QHBoxLayout()
         
-        gmail_btn = QPushButton("Gmail Setup")
-        gmail_btn.clicked.connect(lambda: self.quick_setup(Provider.GMAIL))
+        # Gmail button with icon and tooltip
+        gmail_btn = QPushButton("Gmail")
+        gmail_btn.setIcon(QIcon("resources/icons/gmail.png"))  # You'll need to add these icons
+        gmail_btn.setToolTip("Set up Gmail account with OAuth authentication")
+        gmail_btn.clicked.connect(lambda: self.quick_setup_with_domain(Provider.GMAIL))
         provider_layout.addWidget(gmail_btn)
         
-        outlook_btn = QPushButton("Outlook Setup")
-        outlook_btn.clicked.connect(lambda: self.quick_setup(Provider.OUTLOOK))
+        outlook_btn = QPushButton("Outlook")
+        outlook_btn.setIcon(QIcon("resources/icons/outlook.png"))
+        outlook_btn.setToolTip("Set up Outlook/Hotmail account with OAuth authentication")
+        outlook_btn.clicked.connect(lambda: self.quick_setup_with_domain(Provider.OUTLOOK))
         provider_layout.addWidget(outlook_btn)
         
-        yahoo_btn = QPushButton("Yahoo Setup")
-        yahoo_btn.clicked.connect(lambda: self.quick_setup(Provider.YAHOO))
+        yahoo_btn = QPushButton("Yahoo")
+        yahoo_btn.setIcon(QIcon("resources/icons/yahoo.png"))
+        yahoo_btn.setToolTip("Set up Yahoo Mail account with OAuth authentication")
+        yahoo_btn.clicked.connect(lambda: self.quick_setup_with_domain(Provider.YAHOO))
         provider_layout.addWidget(yahoo_btn)
         
-        form.addRow("Quick Setup:", provider_layout)
+        quick_setup_layout.addLayout(provider_layout)
+        quick_setup_group.setLayout(quick_setup_layout)
+        layout.addWidget(quick_setup_group)
         
-        # Server settings
+        # Manual setup section
+        manual_setup_group = QGroupBox("Manual Setup")
+        manual_form = QFormLayout()
+        
+        # Email input with improved validation feedback
+        email_layout = QHBoxLayout()
+        self.email_input = QLineEdit()
+        self.email_input.setPlaceholderText("your.name@example.com")
+        self.email_input.textChanged.connect(self.validate_email)
+        self.email_input.setToolTip("Enter your email address")
+        email_layout.addWidget(self.email_input)
+        
+        self.validation_indicator = QLabel()
+        self.validation_indicator.setFixedWidth(20)
+        email_layout.addWidget(self.validation_indicator)
+        
+        manual_form.addRow("Email:", email_layout)
+        
+        # Server settings with collapsible advanced section
+        server_settings = QGroupBox("Server Settings")
+        server_form = QFormLayout()
+        
+        # IMAP settings
+        imap_group = QGroupBox("IMAP (Incoming Mail)")
+        imap_layout = QFormLayout()
+        
         self.imap_server = QLineEdit()
-        form.addRow("IMAP Server:", self.imap_server)
+        self.imap_server.setPlaceholderText("imap.example.com")
+        self.imap_server.setToolTip("Enter your IMAP server address")
+        imap_layout.addRow("Server:", self.imap_server)
         
         self.imap_port = QSpinBox()
         self.imap_port.setRange(1, 65535)
         self.imap_port.setValue(993)
-        form.addRow("IMAP Port:", self.imap_port)
+        self.imap_port.setToolTip("Common ports: 993 (SSL) or 143 (non-SSL)")
+        imap_layout.addRow("Port:", self.imap_port)
         
-        self.imap_ssl = QCheckBox("Use SSL")
+        self.imap_ssl = QCheckBox("Use SSL/TLS")
         self.imap_ssl.setChecked(True)
-        form.addRow("", self.imap_ssl)
+        self.imap_ssl.setToolTip("Enable for secure connection (recommended)")
+        imap_layout.addRow("", self.imap_ssl)
+        
+        imap_group.setLayout(imap_layout)
+        server_form.addRow(imap_group)
+        
+        # SMTP settings
+        smtp_group = QGroupBox("SMTP (Outgoing Mail)")
+        smtp_layout = QFormLayout()
         
         self.smtp_server = QLineEdit()
-        form.addRow("SMTP Server:", self.smtp_server)
+        self.smtp_server.setPlaceholderText("smtp.example.com")
+        self.smtp_server.setToolTip("Enter your SMTP server address")
+        smtp_layout.addRow("Server:", self.smtp_server)
         
         self.smtp_port = QSpinBox()
         self.smtp_port.setRange(1, 65535)
         self.smtp_port.setValue(587)
-        form.addRow("SMTP Port:", self.smtp_port)
+        self.smtp_port.setToolTip("Common ports: 587 (TLS) or 465 (SSL)")
+        smtp_layout.addRow("Port:", self.smtp_port)
         
-        self.smtp_ssl = QCheckBox("Use SSL")
+        self.smtp_ssl = QCheckBox("Use SSL/TLS")
         self.smtp_ssl.setChecked(True)
-        form.addRow("", self.smtp_ssl)
+        self.smtp_ssl.setToolTip("Enable for secure connection (recommended)")
+        smtp_layout.addRow("", self.smtp_ssl)
         
-        # Password field (hidden for OAuth providers)
+        smtp_group.setLayout(smtp_layout)
+        server_form.addRow(smtp_group)
+        
+        server_settings.setLayout(server_form)
+        manual_form.addRow(server_settings)
+        
+        # Password field with show/hide toggle
+        password_layout = QHBoxLayout()
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password_label = QLabel("Password:")
-        form.addRow(self.password_label, self.password_input)
+        self.password_input.setPlaceholderText("Enter your password or app password")
+        self.password_input.setToolTip("For Gmail, Outlook, and Yahoo, use an app password")
+        password_layout.addWidget(self.password_input)
         
-        layout.addLayout(form)
+        self.show_password_btn = QPushButton()
+        self.show_password_btn.setIcon(QIcon("resources/icons/eye.png"))
+        self.show_password_btn.setCheckable(True)
+        self.show_password_btn.setToolTip("Show/hide password")
+        self.show_password_btn.clicked.connect(self.toggle_password_visibility)
+        password_layout.addWidget(self.show_password_btn)
         
-        # Buttons
+        manual_form.addRow("Password:", password_layout)
+        
+        manual_setup_group.setLayout(manual_form)
+        layout.addWidget(manual_setup_group)
+        
+        # Buttons with improved layout and feedback
         button_layout = QHBoxLayout()
         
         self.test_btn = QPushButton("Test Connection")
+        self.test_btn.setIcon(QIcon("resources/icons/test.png"))
         self.test_btn.clicked.connect(self.test_connection)
         button_layout.addWidget(self.test_btn)
         
         button_layout.addStretch()
         
         save_btn = QPushButton("Save")
+        save_btn.setIcon(QIcon("resources/icons/save.png"))
         save_btn.clicked.connect(self.accept)
         button_layout.addWidget(save_btn)
         
         cancel_btn = QPushButton("Cancel")
+        cancel_btn.setIcon(QIcon("resources/icons/cancel.png"))
         cancel_btn.clicked.connect(self.reject)
         button_layout.addWidget(cancel_btn)
         
         layout.addLayout(button_layout)
         
-        # Add real-time validation
-        self.email_input.textChanged.connect(self.validate_email)
-        self.validation_label = QLabel()
+        # Status bar for feedback
+        self.status_bar = QStatusBar()
+        layout.addWidget(self.status_bar)
+        
+        # Set default focus
+        self.email_input.setFocus()
     
-    def validate_email(self, email: str):
-        # Add proper email validation
-        if not is_valid_email(email):
-            self.validation_label.setText("Invalid email format")
+    def toggle_password_visibility(self):
+        """Toggle password field visibility."""
+        if self.password_input.echoMode() == QLineEdit.EchoMode.Password:
+            self.password_input.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.show_password_btn.setIcon(QIcon("resources/icons/eye-slash.png"))
+        else:
+            self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+            self.show_password_btn.setIcon(QIcon("resources/icons/eye.png"))
+    
+    def validate_email(self, email: str) -> bool:
+        """
+        Validate email format with improved visual feedback.
+        
+        Args:
+            email: Email address to validate
+            
+        Returns:
+            bool: True if email is valid
+        """
+        pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        is_valid = bool(re.match(pattern, email))
+        
+        if not email:
+            self.validation_indicator.clear()
+            self.status_bar.clearMessage()
+        elif is_valid:
+            self.validation_indicator.setPixmap(QIcon("resources/icons/check.png").pixmap(16, 16))
+            self.status_bar.clearMessage()
+            
+            # Auto-detect provider and suggest quick setup
+            provider = EmailProviders.detect_provider(email)
+            if provider != Provider.CUSTOM:
+                self.status_bar.showMessage(
+                    f"Tip: Click the {provider.value} button above for automatic setup",
+                    5000
+                )
+        else:
+            self.validation_indicator.setPixmap(QIcon("resources/icons/error.png").pixmap(16, 16))
+            self.status_bar.showMessage("Invalid email format", 3000)
+        
+        return is_valid
     
     @handle_errors
-    def quick_setup(self, provider: Provider):
+    def quick_setup_with_domain(self, provider: Provider):
         """
-        Configure settings for a specific provider.
+        Configure settings for a specific provider with domain handling.
         
         Args:
             provider (Provider): Email provider to configure
         """
-        logger.logger.debug(f"Starting quick setup for provider: {provider.value}")
+        logger.debug(f"Starting quick setup for provider: {provider.value}")
         
+        # Get provider configuration
         config = EmailProviders.get_provider_config(provider)
         if not config:
-            logger.logger.error(f"No configuration found for provider: {provider.value}")
+            logger.error(f"No configuration found for provider: {provider.value}")
             return
         
-        logger.logger.debug(f"Provider config loaded: {config.name}")
+        # Get username for email address
+        username, ok = QInputDialog.getText(
+            self,
+            f"Enter {provider.value} Username",
+            f"Enter your {provider.value} username (without @{config.domain}):"
+        )
         
-        # Set server settings
+        if not ok or not username:
+            return
+        
+        # Construct email address
+        email = f"{username}@{config.domain}"
+        if not self.validate_email(email):
+            QMessageBox.warning(
+                self,
+                "Invalid Username",
+                "Please enter a valid username without special characters."
+            )
+            return
+        
+        # Set email in input field
+        self.email_input.setText(email)
+        
+        # Configure server settings
         self.imap_server.setText(config.imap_server)
         self.imap_port.setValue(config.imap_port)
         self.imap_ssl.setChecked(config.imap_ssl)
@@ -142,31 +283,20 @@ class EmailAccountDialog(QDialog):
         self.smtp_port.setValue(config.smtp_port)
         self.smtp_ssl.setChecked(config.smtp_ssl)
         
-        logger.logger.debug("Server settings configured")
+        logger.debug("Server settings configured")
         
         # Handle OAuth for Gmail
         if provider == Provider.GMAIL:
             try:
-                logger.logger.debug("Starting Gmail OAuth flow")
+                logger.debug("Starting Gmail OAuth flow")
                 # Hide password field for OAuth
                 self.password_label.hide()
                 self.password_input.hide()
                 
-                # Get email from input field
-                email = self.email_input.text()
-                if not email:
-                    QMessageBox.warning(
-                        self,
-                        "Email Required",
-                        "Please enter your Gmail address first."
-                    )
-                    self.email_input.setFocus()
-                    return
-                
                 # Start OAuth flow
                 tokens = EmailProviders.authenticate_oauth(email, provider)
                 if tokens and 'access_token' in tokens:
-                    logger.logger.debug("OAuth authentication successful, storing tokens")
+                    logger.debug("OAuth authentication successful, storing tokens")
                     
                     # Verify email if available from userinfo
                     if 'email' in tokens and tokens.get('email_verified', False):
@@ -188,7 +318,7 @@ class EmailAccountDialog(QDialog):
                         'provider': provider.value,
                         'oauth_tokens': tokens
                     }
-                    logger.logger.debug(f"Account data prepared: {self.account_data}")
+                    logger.debug(f"Account data prepared: {self.account_data}")
                     
                     QMessageBox.information(
                         self,
@@ -196,17 +326,17 @@ class EmailAccountDialog(QDialog):
                         f"Gmail account {email} authenticated successfully!"
                     )
                     
-                    logger.logger.debug("Accepting dialog to save account")
+                    logger.debug("Accepting dialog to save account")
                     self.accept()
                 else:
-                    logger.logger.error("Invalid OAuth tokens received")
+                    logger.error("Invalid OAuth tokens received")
                     QMessageBox.warning(
                         self,
                         "Authentication Failed",
                         "Failed to authenticate Gmail account. Please try again."
                     )
             except Exception as e:
-                logger.logger.error(f"Gmail OAuth error: {str(e)}", exc_info=True)
+                logger.error(f"Gmail OAuth error: {str(e)}", exc_info=True)
                 QMessageBox.critical(
                     self,
                     "Authentication Failed",
@@ -218,18 +348,7 @@ class EmailAccountDialog(QDialog):
                 )
                 return
         else:
-            # For non-OAuth providers, we need an email address
-            email = self.email_input.text()
-            if not email:
-                QMessageBox.warning(
-                    self,
-                    "Email Required",
-                    f"Please enter your {provider.value} email address first."
-                )
-                self.email_input.setFocus()
-                return
-            
-            # Show password field for non-OAuth providers
+            # For non-OAuth providers, show password field
             self.password_label.show()
             self.password_input.show()
             
@@ -249,180 +368,125 @@ class EmailAccountDialog(QDialog):
                 if reply == QMessageBox.StandardButton.Yes:
                     EmailProviders.open_app_password_setup(provider)
     
-    def on_email_changed(self, email):
-        """
-        Handle email input changes and auto-configure if possible.
-        
-        Args:
-            email (str): Current email input
-        """
-        if not email:
+    @handle_errors
+    def test_connection(self):
+        """Test the email account connection with visual feedback."""
+        email = self.email_input.text()
+        if not self.validate_email(email):
+            self.status_bar.showMessage("Please enter a valid email address", 3000)
             return
         
-        # Try to detect provider and auto-configure
-        provider = EmailProviders.detect_provider(email)
-        if provider != Provider.CUSTOM:
-            config = EmailProviders.get_provider_config(provider)
-            if config:
-                self.imap_server.setText(config.imap_server)
-                self.imap_port.setValue(config.imap_port)
-                self.imap_ssl.setChecked(config.imap_ssl)
-                self.smtp_server.setText(config.smtp_server)
-                self.smtp_port.setValue(config.smtp_port)
-                self.smtp_ssl.setChecked(config.smtp_ssl)
-                
-                # Handle OAuth visibility
-                if provider == Provider.GMAIL:
-                    self.password_label.hide()
-                    self.password_input.hide()
-                else:
-                    self.password_label.show()
-                    self.password_input.show()
-    
-    def load_account_data(self, account_data):
-        """
-        Load existing account data into the form.
+        # Show testing status
+        self.status_bar.showMessage("Testing connection...", 0)
+        self.test_btn.setEnabled(False)
+        QApplication.processEvents()  # Ensure UI updates
         
-        Args:
-            account_data (dict): Account configuration data
-        """
-        self.email_input.setText(account_data['email'])
-        self.imap_server.setText(account_data['imap_server'])
-        self.imap_port.setValue(account_data['imap_port'])
-        self.imap_ssl.setChecked(account_data['imap_ssl'])
-        self.smtp_server.setText(account_data['smtp_server'])
-        self.smtp_port.setValue(account_data['smtp_port'])
-        self.smtp_ssl.setChecked(account_data['smtp_ssl'])
-        
-        # Handle OAuth vs password
-        provider = EmailProviders.detect_provider(account_data['email'])
-        if provider == Provider.GMAIL:
-            self.password_label.hide()
-            self.password_input.hide()
-            
-            # Check if we need to re-authenticate
-            tokens = self.credential_service.get_oauth_tokens(account_data['email'])
-            if not tokens:
-                reply = QMessageBox.question(
-                    self,
-                    "Re-authentication Required",
-                    "Your Gmail account needs to be re-authenticated.\n\n"
-                    "Would you like to authenticate now?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                )
-                
-                if reply == QMessageBox.StandardButton.Yes:
-                    self.quick_setup(Provider.GMAIL)
-        else:
-            credentials = self.credential_service.get_email_credentials(account_data['email'])
-            if credentials and 'password' in credentials:
-                self.password_input.setText(credentials['password'])
-    
-    @handle_errors
-    def test_connection(self, show_success=True):
-        """
-        Test email server connection.
-        
-        Args:
-            show_success (bool): Whether to show success message
-            
-        Returns:
-            bool: True if connection successful
-        """
         try:
-            email = self.email_input.text()
-            if not email:
+            # Test IMAP connection
+            imap_host = self.imap_server.text()
+            imap_port = self.imap_port.value()
+            use_ssl = self.imap_ssl.isChecked()
+            
+            if use_ssl:
+                imap = imaplib.IMAP4_SSL(imap_host, imap_port)
+            else:
+                imap = imaplib.IMAP4(imap_host, imap_port)
+            
+            # Try to login if password is provided
+            if self.password_input.text():
+                imap.login(email, self.password_input.text())
+            
+            imap.logout()
+            
+            # Test SMTP connection
+            smtp_host = self.smtp_server.text()
+            smtp_port = self.smtp_port.value()
+            
+            if use_ssl:
+                smtp = smtplib.SMTP_SSL(smtp_host, smtp_port)
+            else:
+                smtp = smtplib.SMTP(smtp_host, smtp_port)
+                smtp.starttls()
+            
+            # Try to login if password is provided
+            if self.password_input.text():
+                smtp.login(email, self.password_input.text())
+            
+            smtp.quit()
+            
+            # Show success message
+            self.status_bar.showMessage("Connection test successful!", 5000)
+            QMessageBox.information(
+                self,
+                "Connection Test",
+                "Successfully connected to both IMAP and SMTP servers!"
+            )
+            
+        except (imaplib.IMAP4.error, ssl.SSLError) as e:
+            error_msg = str(e)
+            if "AUTHENTICATIONFAILED" in error_msg:
+                self.status_bar.showMessage("Authentication failed - check your password", 5000)
                 QMessageBox.warning(
                     self,
-                    "Email Required",
-                    "Please enter your email address first."
+                    "IMAP Authentication Failed",
+                    "Failed to authenticate with the IMAP server.\n\n"
+                    "If you're using Gmail, Outlook, or Yahoo, make sure to:\n"
+                    "1. Use an app password instead of your regular password\n"
+                    "2. Enable IMAP access in your email settings\n"
+                    "3. Allow less secure app access if required"
                 )
-                return False
-            
-            # Get provider
-            provider = EmailProviders.detect_provider(email)
-            
-            # For Gmail, use OAuth
-            if provider == Provider.GMAIL:
-                # Check for existing OAuth tokens
-                tokens = self.credential_service.get_oauth_tokens(email)
-                if not tokens:
-                    logger.logger.warning(f"No OAuth tokens found for {email}")
-                    reply = QMessageBox.question(
-                        self,
-                        "Authentication Required",
-                        "Gmail requires OAuth authentication.\n\n"
-                        "Would you like to authenticate now?",
-                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                    )
-                    if reply == QMessageBox.StandardButton.Yes:
-                        self.quick_setup(Provider.GMAIL)
-                    return False
-                
-                # Test connection with OAuth
-                from email_manager import EmailManager
-                account_data = {
-                    'email': email,
-                    'imap_server': self.imap_server.text(),
-                    'imap_port': self.imap_port.value(),
-                    'imap_ssl': self.imap_ssl.isChecked(),
-                    'smtp_server': self.smtp_server.text(),
-                    'smtp_port': self.smtp_port.value(),
-                    'smtp_ssl': self.smtp_ssl.isChecked(),
-                    'oauth_tokens': tokens
-                }
             else:
-                # Test with password
-                password = self.password_input.text()
-                if not password:
-                    QMessageBox.warning(
-                        self,
-                        "Password Required",
-                        "Please enter your password first."
-                    )
-                    return False
-                
-                account_data = {
-                    'email': email,
-                    'password': password,
-                    'imap_server': self.imap_server.text(),
-                    'imap_port': self.imap_port.value(),
-                    'imap_ssl': self.imap_ssl.isChecked(),
-                    'smtp_server': self.smtp_server.text(),
-                    'smtp_port': self.smtp_port.value(),
-                    'smtp_ssl': self.smtp_ssl.isChecked()
-                }
-            
-            # Test connection
-            from email_manager import EmailManager
-            email_manager = EmailManager(account_data)
-            
-            # Test IMAP
-            if not email_manager.connect_imap():
-                raise ConnectionError("Failed to connect to IMAP server")
-            
-            # Test SMTP
-            if not email_manager.connect_smtp():
-                raise ConnectionError("Failed to connect to SMTP server")
-            
-            if show_success:
-                QMessageBox.information(
-                    self,
-                    "Connection Successful",
-                    "Successfully connected to email servers!"
-                )
-            
-            return True
-            
-        except Exception as e:
-            logger.logger.error(f"Connection test failed: {str(e)}")
-            if show_success:
+                self.status_bar.showMessage("IMAP connection failed", 5000)
                 QMessageBox.critical(
                     self,
-                    "Connection Failed",
-                    f"Failed to connect to email servers:\n{str(e)}"
+                    "IMAP Connection Failed",
+                    f"Failed to connect to IMAP server: {error_msg}\n\n"
+                    "Please check:\n"
+                    "1. Server address and port are correct\n"
+                    "2. SSL/TLS settings are correct\n"
+                    "3. Your internet connection is working"
                 )
-            return False
+        except smtplib.SMTPAuthenticationError as e:
+            self.status_bar.showMessage("SMTP authentication failed", 5000)
+            QMessageBox.warning(
+                self,
+                "SMTP Authentication Failed",
+                "Failed to authenticate with the SMTP server.\n\n"
+                "If you're using Gmail, Outlook, or Yahoo, make sure to:\n"
+                "1. Use an app password instead of your regular password\n"
+                "2. Enable SMTP access in your email settings\n"
+                "3. Allow less secure app access if required"
+            )
+        except (smtplib.SMTPException, ssl.SSLError) as e:
+            self.status_bar.showMessage("SMTP connection failed", 5000)
+            QMessageBox.critical(
+                self,
+                "SMTP Connection Failed",
+                f"Failed to connect to SMTP server: {str(e)}\n\n"
+                "Please check:\n"
+                "1. Server address and port are correct\n"
+                "2. SSL/TLS settings are correct\n"
+                "3. Your internet connection is working"
+            )
+        except Exception as e:
+            self.status_bar.showMessage("Connection test failed", 5000)
+            QMessageBox.critical(
+                self,
+                "Connection Test Failed",
+                f"An unexpected error occurred: {str(e)}"
+            )
+        finally:
+            self.test_btn.setEnabled(True)
+    
+    def load_account_data(self, account_data: dict):
+        """Load existing account data into the form."""
+        self.email_input.setText(account_data.get('email', ''))
+        self.imap_server.setText(account_data.get('imap_server', ''))
+        self.imap_port.setValue(account_data.get('imap_port', 993))
+        self.imap_ssl.setChecked(account_data.get('imap_ssl', True))
+        self.smtp_server.setText(account_data.get('smtp_server', ''))
+        self.smtp_port.setValue(account_data.get('smtp_port', 587))
+        self.smtp_ssl.setChecked(account_data.get('smtp_ssl', True))
     
     def accept(self):
         """Handle dialog acceptance and save account data."""

@@ -5,7 +5,7 @@ Provides a modern, animated loading indicator that can be centered on its parent
 
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import Qt, QTimer, QSize
-from PyQt6.QtGui import QPainter, QColor, QPen
+from PyQt6.QtGui import QPainter, QColor, QPen, QPaintEvent
 from typing import Optional
 
 class LoadingSpinner(QWidget):
@@ -70,7 +70,7 @@ class LoadingSpinner(QWidget):
         self.angle = (self.angle + self.angular_speed) % 360
         self.update()
     
-    def paintEvent(self, event: QPainter.Event) -> None:
+    def paintEvent(self, event: QPaintEvent) -> None:
         """
         Paint the spinner with fading lines.
         
@@ -152,4 +152,3 @@ class LoadingSpinner(QWidget):
         """
         from math import cos, pi
         return cos(angle * pi / 180)
-""" 

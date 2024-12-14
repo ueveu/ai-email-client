@@ -63,6 +63,72 @@ class MainWindow(QMainWindow):
         # Set up network monitoring
         self._setup_network_monitoring()
     
+    def _setup_network_monitoring(self):
+        """Set up network connectivity monitoring."""
+        # Create network menu
+        network_menu = self.menuBar().addMenu("&Network")
+        
+        # Work offline action
+        self.offline_action = QAction("Work Offline", self)
+        self.offline_action.setCheckable(True)
+        self.offline_action.setStatusTip("Toggle offline mode")
+        self.offline_action.triggered.connect(self._toggle_offline_mode)
+        network_menu.addAction(self.offline_action)
+        
+        # Connect network service signals
+        self.network_service.connection_changed.connect(self._on_connection_changed)
+        
+        # Start monitoring
+        self.network_service.start_monitoring()
+    
+    def _toggle_offline_mode(self, checked: bool):
+        """Toggle offline mode."""
+        if checked:
+            self.network_service.set_offline_mode(True)
+            self.notification_service.show_notification(
+                "Offline Mode",
+                "Application is now working offline",
+                NotificationType.INFO
+            )
+        else:
+            self.network_service.set_offline_mode(False)
+            self.notification_service.show_notification(
+                "Online Mode",
+                "Application is now working online",
+                NotificationType.INFO
+            )
+    
+    def _on_connection_changed(self, is_connected: bool):
+        """Handle network connection changes."""
+        # Update status bar
+        self.status_bar.set_online_status(is_connected)
+        
+        # Show notification
+        if is_connected:
+            self.notification_service.show_notification(
+                "Network Connected",
+                "Internet connection is available",
+                NotificationType.SUCCESS
+            )
+        else:
+            self.notification_service.show_notification(
+                "Network Disconnected",
+                "No internet connection available",
+                NotificationType.WARNING
+            )
+        
+        # Update offline action
+        self.offline_action.setChecked(not is_connected)
+        
+        # Handle email operations
+        if not is_connected:
+            # Pause active operations
+            for operation in self.operation_service.get_active_operations():
+                if operation.type in [
+                    'send', 'fetch', 'sync', 'search'
+                ]:
+                    self.operation_service.cancel_operation(operation.id)
+    
     def setup_ui(self):
         """Set up the main window UI."""
         self.setWindowTitle("AI Email Assistant")
@@ -396,69 +462,6 @@ class MainWindow(QMainWindow):
         # Move to background thread
         self.loading_indicator.start()
         threading.Thread(target=self._async_refresh).start()
-    
-    def _setup_network_monitoring(self):
-        """Set up network connectivity monitoring."""
-        # Create timer for network checks
-        self.network_timer = QTimer(self)
-        self.network_timer.timeout.connect(self._check_network_status)
-        self.network_timer.start(30000)  # Check every 30 seconds
-        
-        # Initial check
-        self._check_network_status()
-    
-    def _check_network_status(self):
-        """Check network connectivity status."""
-        is_online = self.network_service.check_connectivity()
-        
-        # Update UI
-        self.status_bar.set_online_status(is_online)
-        
-        if not is_online and not self.offline_action.isChecked():
-            # Automatically switch to offline mode
-            self.offline_action.setChecked(True)
-            self.toggle_offline_mode()
-            
-            # Notify user
-            self.notification_service.add_notification(
-                "Network Connection Lost",
-                "Switched to offline mode. Using cached emails.",
-                "warning"
-            )
-        elif is_online and self.offline_action.isChecked():
-            # Ask user if they want to go back online
-            reply = QMessageBox.question(
-                self,
-                "Network Connection Available",
-                "Network connection is available. Would you like to go back online?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            
-            if reply == QMessageBox.StandardButton.Yes:
-                self.offline_action.setChecked(False)
-                self.toggle_offline_mode()
-    
-    def toggle_offline_mode(self):
-        """Toggle offline mode."""
-        is_offline = self.offline_action.isChecked()
-        
-        # Update email manager
-        if hasattr(self.email_tab, 'email_manager'):
-            self.email_tab.email_manager.set_offline_mode(is_offline)
-        
-        # Update UI
-        self.status_bar.set_online_status(not is_offline)
-        
-        # Refresh emails in current view
-        self.email_tab.refresh_emails()
-        
-        # Show notification
-        mode = "offline" if is_offline else "online"
-        self.notification_service.add_notification(
-            f"Switched to {mode} mode",
-            f"Now working in {mode} mode",
-            "info"
-        )
     
     def configure_gemini_api(self):
         """Configure and validate Gemini API key."""

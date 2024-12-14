@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
 from PyQt6.QtCore import Qt, QSize, pyqtSlot, QPropertyAnimation, QRect
 from PyQt6.QtGui import QIcon
 from services.notification_service import NotificationService
-from services.email_operation_service import EmailOperationService
+from services.email_operation_service import EmailOperationService, OperationType
 from .notification_widget import NotificationWidget
 from .operation_status_widget import OperationStatusWidget
 import qtawesome as qta
@@ -24,6 +24,15 @@ class StatusBarWidget(QWidget):
         # Track active items
         self.active_notifications = 0
         self.active_operations = 0
+        
+        # Create online status indicator
+        self.online_status_label = QLabel()
+        self.online_status_label.setStyleSheet("""
+            QLabel {
+                padding: 4px 8px;
+                border-radius: 4px;
+            }
+        """)
         
         self.setup_ui()
         self.connect_signals()
@@ -46,6 +55,9 @@ class StatusBarWidget(QWidget):
         
         status_layout = QHBoxLayout(self.status_bar)
         status_layout.setContentsMargins(8, 4, 8, 4)
+        
+        # Online status indicator
+        status_layout.addWidget(self.online_status_label)
         
         # Status indicators
         self.notification_indicator = self._create_indicator(
@@ -138,18 +150,18 @@ class StatusBarWidget(QWidget):
         
         # Connect notification service signals
         self.notification_service.notification_added.connect(
-            lambda notif: self.on_notification_added(notif)
+            self.on_notification_added
         )
         self.notification_service.notification_removed.connect(
-            lambda notif_id: self.on_notification_removed(notif_id)
+            self.on_notification_removed
         )
         
         # Connect operation service signals
         self.operation_service.operation_started.connect(
-            lambda op_id, op_type: self.on_operation_started(op_id, op_type)
+            self.on_operation_started
         )
         self.operation_service.operation_completed.connect(
-            lambda op_id, success, msg: self.on_operation_completed(op_id, success, msg)
+            self.on_operation_completed
         )
     
     def toggle_section(self, section: str, show: bool):
@@ -179,26 +191,26 @@ class StatusBarWidget(QWidget):
         animation.setEndValue(target_height)
         animation.start()
     
-    @pyqtSlot()
-    def on_notification_added(self, notification):
+    @pyqtSlot(dict)
+    def on_notification_added(self, notification: dict):
         """Handle new notification."""
         self.active_notifications += 1
         self._update_notification_indicator()
     
-    @pyqtSlot()
-    def on_notification_removed(self, notification_id):
+    @pyqtSlot(str)
+    def on_notification_removed(self, notification_id: str):
         """Handle notification removal."""
         self.active_notifications = max(0, self.active_notifications - 1)
         self._update_notification_indicator()
     
-    @pyqtSlot()
-    def on_operation_started(self, _, __):
+    @pyqtSlot(str, OperationType)
+    def on_operation_started(self, operation_id: str, operation_type: OperationType):
         """Handle operation started."""
         self.active_operations += 1
         self._update_operation_indicator()
     
-    @pyqtSlot()
-    def on_operation_completed(self, _, __, ___):
+    @pyqtSlot(str, bool, str)
+    def on_operation_completed(self, operation_id: str, success: bool, message: str):
         """Handle operation completed."""
         self.active_operations = max(0, self.active_operations - 1)
         self._update_operation_indicator()
@@ -231,4 +243,32 @@ class StatusBarWidget(QWidget):
             # Auto-hide operations panel if empty
             if self.operation_widget.isVisible():
                 self.operation_indicator.setChecked(False)
-                self.toggle_section('operations', False) 
+                self.toggle_section('operations', False)
+    
+    def set_online_status(self, is_online: bool):
+        """
+        Set the online status indicator.
+        
+        Args:
+            is_online: Whether the application is online
+        """
+        if is_online:
+            self.online_status_label.setText("Online")
+            self.online_status_label.setStyleSheet("""
+                QLabel {
+                    background-color: #4CAF50;
+                    color: white;
+                    padding: 4px 8px;
+                    border-radius: 4px;
+                }
+            """)
+        else:
+            self.online_status_label.setText("Offline")
+            self.online_status_label.setStyleSheet("""
+                QLabel {
+                    background-color: #F44336;
+                    color: white;
+                    padding: 4px 8px;
+                    border-radius: 4px;
+                }
+            """) 
