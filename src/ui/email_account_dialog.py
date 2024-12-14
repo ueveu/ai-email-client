@@ -11,6 +11,7 @@ from email_providers import EmailProviders, Provider
 from utils.error_handler import handle_errors
 from utils.logger import logger
 import socket
+import re
 
 class ConnectionTester(QThread):
     """
@@ -105,28 +106,83 @@ class ConnectionTester(QThread):
             socket.setdefaulttimeout(None)
     
     def _test_smtp(self):
+        """Test SMTP connection with detailed error handling and status reporting."""
         try:
+            # Create progress steps
+            self.finished.emit(False, "SMTP", "Connecting to server...")
+            
+            # Set timeout for operations
+            socket.setdefaulttimeout(30)  # 30 seconds timeout
+            
+            # Create SSL context with modern security settings
             context = ssl.create_default_context()
+            context.options |= ssl.OP_NO_SSLv2 | ssl.OP_NO_SSLv3
             
-            if self.settings['smtp_ssl']:
-                server = smtplib.SMTP_SSL(
-                    self.settings['smtp_server'],
-                    self.settings['smtp_port'],
-                    context=context
-                )
-            else:
-                server = smtplib.SMTP(
-                    self.settings['smtp_server'],
-                    self.settings['smtp_port']
-                )
-                server.starttls(context=context)
+            try:
+                if self.settings['smtp_ssl']:
+                    self.finished.emit(False, "SMTP", "Establishing secure connection (SSL)...")
+                    server = smtplib.SMTP_SSL(
+                        self.settings['smtp_server'],
+                        self.settings['smtp_port'],
+                        context=context,
+                        timeout=30
+                    )
+                else:
+                    server = smtplib.SMTP(
+                        self.settings['smtp_server'],
+                        self.settings['smtp_port'],
+                        timeout=30
+                    )
+                    self.finished.emit(False, "SMTP", "Starting TLS encryption...")
+                    server.starttls(context=context)
+            except ssl.SSLError as e:
+                if "WRONG_VERSION_NUMBER" in str(e):
+                    raise Exception(
+                        "SSL/TLS version error. Try " + 
+                        ("disabling" if self.settings['smtp_ssl'] else "enabling") +
+                        " SSL/TLS or using a different port."
+                    )
+                raise
             
-            server.login(self.settings['email'], self.settings['password'])
+            self.finished.emit(False, "SMTP", "Authenticating...")
+            
+            try:
+                server.login(self.settings['email'], self.settings['password'])
+            except smtplib.SMTPAuthenticationError:
+                raise Exception("Authentication failed. Please check your email and password.")
+            except smtplib.SMTPNotSupportedError:
+                raise Exception("Authentication method not supported. Try enabling/disabling SSL/TLS.")
+            
+            # Test sending capability
+            self.finished.emit(False, "SMTP", "Verifying send capability...")
+            
+            try:
+                server.verify(self.settings['email'])
+            except (smtplib.SMTPServerDisconnected, smtplib.SMTPResponseException):
+                raise Exception("Could not verify sending capability. Please check server permissions.")
+            
             server.quit()
+            self.finished.emit(True, "SMTP", "SMTP connection successful! All tests passed.")
             
-            self.finished.emit(True, "SMTP", "SMTP connection successful")
+        except socket.gaierror:
+            self.finished.emit(False, "SMTP", "Could not resolve server address. Please check server settings.")
+        except socket.timeout:
+            self.finished.emit(False, "SMTP", "Connection timed out. Please check your internet connection and server settings.")
+        except ssl.SSLError as e:
+            self.finished.emit(False, "SMTP", f"SSL/TLS error: {str(e)}. Please check your security settings.")
+        except ConnectionRefusedError:
+            self.finished.emit(False, "SMTP", "Connection refused. Please verify server and port settings.")
+        except smtplib.SMTPConnectError:
+            self.finished.emit(False, "SMTP", "Failed to connect to server. Please check server settings and firewall rules.")
+        except smtplib.SMTPHeloError:
+            self.finished.emit(False, "SMTP", "Server rejected HELO. Please check if server allows connections from your IP.")
+        except smtplib.SMTPException as e:
+            self.finished.emit(False, "SMTP", f"SMTP error: {str(e)}")
         except Exception as e:
             self.finished.emit(False, "SMTP", str(e))
+        finally:
+            # Reset timeout to default
+            socket.setdefaulttimeout(None)
 
 class EmailAccountDialog(QDialog):
     def __init__(self, parent=None, account_data=None):
@@ -149,87 +205,96 @@ class EmailAccountDialog(QDialog):
         """Sets up the UI components."""
         layout = QVBoxLayout(self)
         
-        # Quick Setup Section
-        quick_setup = QGroupBox("Quick Setup")
-        quick_layout = QVBoxLayout()
+        # Set window title based on mode
+        self.setWindowTitle("Edit Email Account" if self.account_data else "Add Email Account")
         
-        # Provider login buttons
-        provider_buttons = QHBoxLayout()
-        
-        # Gmail button with logo
-        gmail_btn = QPushButton("Login with Gmail")
-        gmail_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #ffffff;
-                border: 1px solid #dadce0;
-                border-radius: 4px;
-                padding: 8px 16px;
-                color: #3c4043;
-            }
-            QPushButton:hover {
-                background-color: #f8f9fa;
-                border-color: #d2e3fc;
-            }
-        """)
-        gmail_btn.clicked.connect(lambda: self.provider_login(Provider.GMAIL))
-        provider_buttons.addWidget(gmail_btn)
-        
-        # Outlook button with logo
-        outlook_btn = QPushButton("Login with Outlook")
-        outlook_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #ffffff;
-                border: 1px solid #dadce0;
-                border-radius: 4px;
-                padding: 8px 16px;
-                color: #3c4043;
-            }
-            QPushButton:hover {
-                background-color: #f8f9fa;
-                border-color: #d2e3fc;
-            }
-        """)
-        outlook_btn.clicked.connect(lambda: self.provider_login(Provider.OUTLOOK))
-        provider_buttons.addWidget(outlook_btn)
-        
-        # Yahoo button with logo
-        yahoo_btn = QPushButton("Login with Yahoo")
-        yahoo_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #ffffff;
-                border: 1px solid #dadce0;
-                border-radius: 4px;
-                padding: 8px 16px;
-                color: #3c4043;
-            }
-            QPushButton:hover {
-                background-color: #f8f9fa;
-                border-color: #d2e3fc;
-            }
-        """)
-        yahoo_btn.clicked.connect(lambda: self.provider_login(Provider.YAHOO))
-        provider_buttons.addWidget(yahoo_btn)
-        
-        quick_layout.addLayout(provider_buttons)
-        
-        # Add a label with instructions
-        instructions = QLabel(
-            "Click one of the buttons above to log in to your email provider.\n"
-            "You will be redirected to the provider's login page."
-        )
-        instructions.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        quick_layout.addWidget(instructions)
-        
-        quick_setup.setLayout(quick_layout)
-        layout.addWidget(quick_setup)
+        # Quick Setup Section (only show for new accounts)
+        if not self.account_data:
+            quick_setup = QGroupBox("Quick Setup")
+            quick_layout = QVBoxLayout()
+            
+            # Provider login buttons
+            provider_buttons = QHBoxLayout()
+            
+            # Gmail button with logo
+            gmail_btn = QPushButton("Login with Gmail")
+            gmail_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #ffffff;
+                    border: 1px solid #dadce0;
+                    border-radius: 4px;
+                    padding: 8px 16px;
+                    color: #3c4043;
+                }
+                QPushButton:hover {
+                    background-color: #f8f9fa;
+                    border-color: #d2e3fc;
+                }
+            """)
+            gmail_btn.clicked.connect(lambda: self.provider_login(Provider.GMAIL))
+            provider_buttons.addWidget(gmail_btn)
+            
+            # Outlook button with logo
+            outlook_btn = QPushButton("Login with Outlook")
+            outlook_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #ffffff;
+                    border: 1px solid #dadce0;
+                    border-radius: 4px;
+                    padding: 8px 16px;
+                    color: #3c4043;
+                }
+                QPushButton:hover {
+                    background-color: #f8f9fa;
+                    border-color: #d2e3fc;
+                }
+            """)
+            outlook_btn.clicked.connect(lambda: self.provider_login(Provider.OUTLOOK))
+            provider_buttons.addWidget(outlook_btn)
+            
+            # Yahoo button with logo
+            yahoo_btn = QPushButton("Login with Yahoo")
+            yahoo_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #ffffff;
+                    border: 1px solid #dadce0;
+                    border-radius: 4px;
+                    padding: 8px 16px;
+                    color: #3c4043;
+                }
+                QPushButton:hover {
+                    background-color: #f8f9fa;
+                    border-color: #d2e3fc;
+                }
+            """)
+            yahoo_btn.clicked.connect(lambda: self.provider_login(Provider.YAHOO))
+            provider_buttons.addWidget(yahoo_btn)
+            
+            quick_layout.addLayout(provider_buttons)
+            
+            # Add a label with instructions
+            instructions = QLabel(
+                "Click one of the buttons above to log in to your email provider.\n"
+                "You will be redirected to the provider's login page."
+            )
+            instructions.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            quick_layout.addWidget(instructions)
+            
+            quick_setup.setLayout(quick_layout)
+            layout.addWidget(quick_setup)
         
         # Manual Setup Section
-        manual_setup = QGroupBox("Manual Setup")
+        manual_setup = QGroupBox("Account Settings")
         form_layout = QFormLayout()
         
         # Email account details
         self.email_input = QLineEdit()
         self.email_input.textChanged.connect(self.on_email_changed)
+        # Disable email field in edit mode
+        if self.account_data:
+            self.email_input.setEnabled(False)
+            self.email_input.setToolTip("Email address cannot be changed")
+        
         self.name_input = QLineEdit()
         form_layout.addRow("Email Address:", self.email_input)
         form_layout.addRow("Display Name:", self.name_input)
@@ -293,6 +358,11 @@ class EmailAccountDialog(QDialog):
         button_layout.addWidget(self.cancel_button)
         
         layout.addLayout(button_layout)
+        
+        # Update button labels for edit mode
+        if self.account_data:
+            self.save_button.setText("Update")
+            self.test_button.setText("Verify Connections")
     
     @handle_errors
     def provider_login(self, provider: Provider):
@@ -377,22 +447,52 @@ class EmailAccountDialog(QDialog):
         }
     
     @handle_errors
+    def validate_server_settings(self):
+        """
+        Validate server settings before saving/testing.
+        
+        Returns:
+            tuple: (bool, str) - (is_valid, error_message)
+        """
+        settings = self.get_account_data()
+        
+        # Validate email format
+        if not re.match(r"[^@]+@[^@]+\.[^@]+", settings['email']):
+            return False, "Invalid email address format"
+        
+        # Validate server addresses
+        if not settings['imap_server']:
+            return False, "IMAP server address is required"
+        if not settings['smtp_server']:
+            return False, "SMTP server address is required"
+        
+        # Validate ports
+        if not (0 < settings['imap_port'] <= 65535):
+            return False, "Invalid IMAP port number"
+        if not (0 < settings['smtp_port'] <= 65535):
+            return False, "Invalid SMTP port number"
+        
+        # Validate SSL settings based on common ports
+        if settings['imap_port'] == 993 and not settings['imap_ssl']:
+            return False, "Port 993 requires SSL to be enabled for IMAP"
+        if settings['smtp_port'] == 465 and not settings['smtp_ssl']:
+            return False, "Port 465 requires SSL to be enabled for SMTP"
+        
+        # Validate password
+        if not settings['password']:
+            return False, "Password is required"
+        if len(settings['password']) < 8:
+            return False, "Password must be at least 8 characters long"
+        
+        return True, ""
+    
+    @handle_errors
     def validate_and_accept(self):
         """Validate the form data before accepting."""
-        if not self.email_input.text():
-            QMessageBox.warning(self, "Validation Error", "Email address is required.")
-            return
-        
-        if not self.imap_server.text():
-            QMessageBox.warning(self, "Validation Error", "IMAP server is required.")
-            return
-        
-        if not self.smtp_server.text():
-            QMessageBox.warning(self, "Validation Error", "SMTP server is required.")
-            return
-        
-        if not self.password_input.text():
-            QMessageBox.warning(self, "Validation Error", "Password is required.")
+        # Validate server settings
+        is_valid, error_message = self.validate_server_settings()
+        if not is_valid:
+            QMessageBox.warning(self, "Validation Error", error_message)
             return
         
         # Store credentials securely
@@ -406,6 +506,14 @@ class EmailAccountDialog(QDialog):
             
             # Remove password from account data (it's now stored securely)
             del account_data['password']
+            
+            # Show success message
+            action = "updated" if self.account_data else "added"
+            QMessageBox.information(
+                self,
+                "Success",
+                f"Account successfully {action}!"
+            )
             
             self.account_data = account_data
             self.accept()
@@ -421,6 +529,12 @@ class EmailAccountDialog(QDialog):
     @handle_errors
     def test_connection(self, server_type):
         """Test connection to email server with detailed progress feedback."""
+        # Validate server settings first
+        is_valid, error_message = self.validate_server_settings()
+        if not is_valid:
+            QMessageBox.warning(self, "Validation Error", error_message)
+            return
+        
         settings = self.get_account_data()
         
         # Validate required fields

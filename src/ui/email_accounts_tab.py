@@ -3,6 +3,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QPushButton,
                            QMessageBox)
 from PyQt6.QtCore import pyqtSignal
 from ui.email_account_dialog import EmailAccountDialog
+from utils.logger import logger
 
 class EmailAccountsTab(QWidget):
     """
@@ -103,25 +104,62 @@ class EmailAccountsTab(QWidget):
             updated_data = dialog.account_data
             self.account_updated.emit(email, updated_data)
     
+    @handle_errors
     def remove_account(self):
-        """Removes the selected account after confirmation."""
+        """Removes the selected account after confirmation and cleanup."""
         row = self.accounts_table.currentRow()
         if row < 0:
             return
         
         email = self.accounts_table.item(row, 0).text()
         
-        # Ask for confirmation
-        reply = QMessageBox.question(
+        # Ask for confirmation with detailed warning
+        reply = QMessageBox.warning(
             self,
-            "Confirm Removal",
-            f"Are you sure you want to remove the account {email}?",
+            "Confirm Account Removal",
+            f"Are you sure you want to remove the account {email}?\n\n"
+            "This will:\n"
+            "• Delete all account settings\n"
+            "• Remove stored credentials\n"
+            "• Close any active connections\n\n"
+            "This action cannot be undone.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
         
         if reply == QMessageBox.StandardButton.Yes:
-            self.account_removed.emit(email)
+            try:
+                # Close any active connections
+                if hasattr(self.parent(), 'email_manager'):
+                    email_manager = self.parent().email_manager
+                    if email_manager and email_manager.account_data['email'] == email:
+                        email_manager.close_connections()
+                        self.parent().email_manager = None
+                
+                # Remove credentials first
+                self.credential_manager.delete_email_credentials(email)
+                
+                # Emit signal to remove account from config
+                self.account_removed.emit(email)
+                
+                # Show success message
+                QMessageBox.information(
+                    self,
+                    "Account Removed",
+                    f"The account {email} has been successfully removed."
+                )
+                
+            except Exception as e:
+                logger.log_error(e, {
+                    'context': 'Removing account',
+                    'account': email
+                })
+                QMessageBox.critical(
+                    self,
+                    "Error",
+                    f"Failed to remove account completely: {str(e)}\n"
+                    "Some data might need to be cleaned up manually."
+                )
     
     def on_selection_changed(self):
         """Handle table selection changes."""
