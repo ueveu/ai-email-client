@@ -55,17 +55,20 @@ class ConnectionTester(QThread):
     
     def _test_smtp(self):
         try:
+            context = ssl.create_default_context()
+            
             if self.settings['smtp_ssl']:
                 server = smtplib.SMTP_SSL(
                     self.settings['smtp_server'],
-                    self.settings['smtp_port']
+                    self.settings['smtp_port'],
+                    context=context
                 )
             else:
                 server = smtplib.SMTP(
                     self.settings['smtp_server'],
                     self.settings['smtp_port']
                 )
-                server.starttls()
+                server.starttls(context=context)
             
             server.login(self.settings['email'], self.settings['password'])
             server.quit()
@@ -401,7 +404,7 @@ class EmailAccountDialog(QDialog):
         tester.start()
     
     @handle_errors
-    def test_all_connections(self):
+    def test_all_connections(self, *args):
         """Test both IMAP and SMTP connections."""
         self.test_connection("IMAP")
         self.test_connection("SMTP")
