@@ -138,18 +138,18 @@ class StatusBarWidget(QWidget):
         
         # Connect notification service signals
         self.notification_service.notification_added.connect(
-            self.on_notification_added
+            lambda notif: self.on_notification_added(notif)
         )
         self.notification_service.notification_removed.connect(
-            self.on_notification_removed
+            lambda notif_id: self.on_notification_removed(notif_id)
         )
         
         # Connect operation service signals
         self.operation_service.operation_started.connect(
-            self.on_operation_started
+            lambda op_id, op_type: self.on_operation_started(op_id, op_type)
         )
         self.operation_service.operation_completed.connect(
-            self.on_operation_completed
+            lambda op_id, success, msg: self.on_operation_completed(op_id, success, msg)
         )
     
     def toggle_section(self, section: str, show: bool):
@@ -180,13 +180,13 @@ class StatusBarWidget(QWidget):
         animation.start()
     
     @pyqtSlot()
-    def on_notification_added(self, _):
+    def on_notification_added(self, notification):
         """Handle new notification."""
         self.active_notifications += 1
         self._update_notification_indicator()
     
     @pyqtSlot()
-    def on_notification_removed(self, _):
+    def on_notification_removed(self, notification_id):
         """Handle notification removal."""
         self.active_notifications = max(0, self.active_notifications - 1)
         self._update_notification_indicator()

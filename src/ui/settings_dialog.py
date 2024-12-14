@@ -6,7 +6,8 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
                            QWidget, QLabel, QComboBox, QCheckBox, QSpinBox,
                            QPushButton, QGroupBox, QFormLayout, QDialogButtonBox,
                            QLineEdit, QScrollArea, QColorDialog, QFileDialog,
-                           QTreeWidget, QTreeWidgetItem, QKeySequenceEdit)
+                           QTreeWidget, QTreeWidgetItem, QKeySequenceEdit,
+                           QFrame)
 from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtGui import QColor, QKeySequence
 import json
@@ -449,24 +450,117 @@ class SettingsDialog(QDialog):
                 account_widget = QWidget()
                 account_layout = QHBoxLayout(account_widget)
                 
-                email_label = QLabel(account['email'])
-                provider_label = QLabel(f"({account['provider']})")
-                status_label = QLabel("✓ Connected" if account['has_credentials'] else "⚠️ No credentials")
+                # Email and provider info
+                info_layout = QVBoxLayout()
+                email_label = QLabel(f"<b>{account['email']}</b>")
+                provider_label = QLabel(f"Provider: {account['provider']}")
+                info_layout.addWidget(email_label)
+                info_layout.addWidget(provider_label)
+                account_layout.addLayout(info_layout)
                 
-                account_layout.addWidget(email_label)
-                account_layout.addWidget(provider_label)
-                account_layout.addWidget(status_label)
-                account_layout.addStretch()
+                # Status and server info
+                status_layout = QVBoxLayout()
+                status_text = "✓ Connected" if account['has_credentials'] else "⚠️ Not Connected"
+                status_label = QLabel(status_text)
+                server_label = QLabel(f"IMAP: {account.get('imap_server', 'N/A')}")
+                status_layout.addWidget(status_label)
+                status_layout.addWidget(server_label)
+                account_layout.addLayout(status_layout)
+                
+                # Quick action buttons
+                button_layout = QVBoxLayout()
+                edit_btn = QPushButton("Edit")
+                edit_btn.clicked.connect(lambda checked, email=account['email']: 
+                                       self.edit_account(email))
+                test_btn = QPushButton("Test Connection")
+                test_btn.clicked.connect(lambda checked, email=account['email']: 
+                                       self.test_account(email))
+                button_layout.addWidget(edit_btn)
+                button_layout.addWidget(test_btn)
+                account_layout.addLayout(button_layout)
                 
                 accounts_layout.addWidget(account_widget)
+                
+                # Add separator line
+                if account != accounts[-1]:  # Don't add line after last account
+                    line = QFrame()
+                    line.setFrameShape(QFrame.Shape.HLine)
+                    line.setFrameShadow(QFrame.Shadow.Sunken)
+                    accounts_layout.addWidget(line)
         else:
-            accounts_layout.addWidget(QLabel("No email accounts configured"))
+            # Show message and add account button when no accounts
+            no_accounts_label = QLabel("No email accounts configured")
+            no_accounts_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            accounts_layout.addWidget(no_accounts_label)
+            
+            add_account_btn = QPushButton("Add Email Account")
+            add_account_btn.clicked.connect(self.add_account)
+            accounts_layout.addWidget(add_account_btn)
         
         accounts_group.setLayout(accounts_layout)
         layout.addWidget(accounts_group)
         
+        # Add buttons at bottom
+        if accounts:
+            button_layout = QHBoxLayout()
+            add_btn = QPushButton("Add Account")
+            add_btn.clicked.connect(self.add_account)
+            manage_btn = QPushButton("Manage Accounts")
+            manage_btn.clicked.connect(self.show_manage_accounts)
+            button_layout.addWidget(add_btn)
+            button_layout.addWidget(manage_btn)
+            button_layout.addStretch()
+            layout.addLayout(button_layout)
+        
         layout.addStretch()
         return tab
+    
+    def add_account(self):
+        """Show dialog to add a new email account."""
+        from .email_account_dialog import EmailAccountDialog
+        dialog = EmailAccountDialog(self)
+        if dialog.exec():
+            # Refresh settings dialog
+            self.load_settings()
+    
+    def edit_account(self, email: str):
+        """Show dialog to edit an email account."""
+        from .email_account_dialog import EmailAccountDialog
+        account_data = self.credential_service.get_account_data(email)
+        if account_data:
+            dialog = EmailAccountDialog(self, account_data)
+            if dialog.exec():
+                # Refresh settings dialog
+                self.load_settings()
+    
+    def test_account(self, email: str):
+        """Test connection for an email account."""
+        from .email_account_dialog import EmailAccountDialog
+        account_data = self.credential_service.get_account_data(email)
+        if account_data:
+            dialog = EmailAccountDialog(self, account_data)
+            dialog.test_connection()
+    
+    def show_manage_accounts(self):
+        """Show the full account management dialog."""
+        from .email_accounts_tab import EmailAccountsTab
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Manage Email Accounts")
+        dialog.setMinimumWidth(800)
+        dialog.setMinimumHeight(600)
+        
+        layout = QVBoxLayout(dialog)
+        accounts_tab = EmailAccountsTab(dialog)
+        layout.addWidget(accounts_tab)
+        
+        # Add close button
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        
+        if dialog.exec():
+            # Refresh settings dialog
+            self.load_settings()
     
     def load_settings(self):
         """Load current settings into the dialog."""

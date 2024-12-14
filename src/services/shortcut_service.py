@@ -71,6 +71,11 @@ class ShortcutService(QObject):
         self.settings = QSettings('AI Email Assistant', 'Settings')
         self.shortcuts: Dict[str, QShortcut] = {}
         self.main_window = None
+        # Initialize shortcut configurations from settings or defaults
+        self.shortcut_configs = self.settings.value('shortcuts', self.DEFAULT_SHORTCUTS)
+        if not self.shortcut_configs:
+            self.shortcut_configs = self.DEFAULT_SHORTCUTS.copy()
+            self.settings.setValue('shortcuts', self.shortcut_configs)
     
     def initialize(self, main_window):
         """

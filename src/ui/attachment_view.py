@@ -7,6 +7,7 @@ from .attachment_preview_dialog import AttachmentPreviewDialog
 import os
 import mimetypes
 import shutil
+from typing import List, Dict
 
 class AttachmentView(QWidget):
     """
@@ -61,58 +62,17 @@ class AttachmentView(QWidget):
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
     
-    def set_attachments(self, attachments):
-        """Set the list of attachments to display."""
-        self.attachments = attachments or []
-        self.update_list()
-    
-    def update_list(self):
-        """Update the attachment list display."""
-        self.list_widget.clear()
-        self.header.setVisible(bool(self.attachments))
-        
-        for attachment in self.attachments:
-            item = QListWidgetItem()
-            
-            # Get appropriate icon based on MIME type
-            mime_type = attachment.get('content_type', 'application/octet-stream')
-            icon = self.get_mime_icon(mime_type)
-            
-            # Set item properties
-            item.setText(f"{icon} {attachment['filename']} ({self.format_size(attachment.get('size', 0))})")
-            item.setData(Qt.ItemDataRole.UserRole, attachment)
-            
-            self.list_widget.addItem(item)
-    
-    def get_mime_icon(self, mime_type):
-        """Get appropriate icon for MIME type."""
-        main_type = mime_type.split('/')[0]
-        
-        if mime_type in self.mime_icons:
-            return self.mime_icons[mime_type]
-        elif main_type in self.mime_icons:
-            return self.mime_icons[main_type]
-        return self.mime_icons['default']
-    
-    def format_size(self, size_bytes):
-        """Format file size in human-readable format."""
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if size_bytes < 1024:
-                return f"{size_bytes:.1f} {unit}"
-            size_bytes /= 1024
-        return f"{size_bytes:.1f} TB"
-    
     def show_context_menu(self, position):
         """Show context menu for attachment operations."""
         item = self.list_widget.itemAt(position)
         if not item:
             return
         
-        menu = QMenu(self)
+        menu = QMenu()
         
         # Add menu actions
-        preview_action = menu.addAction("Preview")
-        download_action = menu.addAction("Download")
+        open_action = menu.addAction("Open")
+        save_action = menu.addAction("Save As...")
         menu.addSeparator()
         remove_action = menu.addAction("Remove")
         
@@ -121,115 +81,201 @@ class AttachmentView(QWidget):
         if not action:
             return
         
-        attachment = item.data(Qt.ItemDataRole.UserRole)
+        attachment = self.attachments[self.list_widget.row(item)]
         
-        if action == preview_action:
-            self.preview_attachment(attachment)
-        elif action == download_action:
-            self.download_attachment(attachment)
+        if action == open_action:
+            self.open_attachment(attachment)
+        elif action == save_action:
+            self.save_attachment(attachment)
         elif action == remove_action:
             self.remove_attachment(attachment)
     
     def on_attachment_double_clicked(self, item):
         """Handle double-click on attachment item."""
-        attachment = item.data(Qt.ItemDataRole.UserRole)
-        self.preview_attachment(attachment)
+        attachment = self.attachments[self.list_widget.row(item)]
+        self.open_attachment(attachment)
     
-    def preview_attachment(self, attachment):
-        """Preview an attachment using the AttachmentPreviewDialog."""
-        try:
-            preview_dialog = AttachmentPreviewDialog(attachment, self)
-            preview_dialog.exec()
-        except Exception as e:
-            logger.error(f"Error previewing attachment: {str(e)}")
-            QMessageBox.warning(
-                self,
-                "Preview Failed",
-                f"Failed to preview attachment:\n{str(e)}"
-            )
+    def set_attachments(self, attachments: List[Dict]):
+        """
+        Set the attachments to display.
+        
+        Args:
+            attachments (List[Dict]): List of attachment data dictionaries
+        """
+        self.attachments = attachments
+        self.list_widget.clear()
+        
+        if attachments:
+            self.header.setVisible(True)
+            for attachment in attachments:
+                self.add_attachment_item(attachment)
+        else:
+            self.header.setVisible(False)
     
-    def download_attachment(self, attachment):
-        """Download an attachment to local storage."""
-        # Get download location from user
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Attachment",
-            attachment['filename']
+    def add_attachment_item(self, attachment: Dict):
+        """Add an attachment item to the list."""
+        item = QListWidgetItem()
+        
+        # Set icon based on MIME type
+        mime_type = attachment.get('content_type', 'application/octet-stream')
+        icon_key = next(
+            (k for k in self.mime_icons if k in mime_type.lower()),
+            'default'
         )
+        item.setText(f"{self.mime_icons[icon_key]} {attachment['filename']}")
         
-        if not file_path:
-            return
+        # Add size information
+        size = attachment.get('size', 0)
+        if size:
+            size_str = self.format_size(size)
+            item.setToolTip(f"{attachment['filename']} ({size_str})")
         
+        self.list_widget.addItem(item)
+    
+    def format_size(self, size: int) -> str:
+        """Format file size in human-readable format."""
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size < 1024:
+                return f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{size:.1f} TB"
+    
+    def open_attachment(self, attachment: Dict):
+        """Open an attachment with the default system application."""
         try:
-            # Show progress
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setValue(0)
-            
-            # Copy file to destination
-            source_path = attachment.get('path')
-            if source_path and os.path.exists(source_path):
-                shutil.copy2(source_path, file_path)
-                self.attachment_downloaded.emit(file_path)
-                self.attachment_saved.emit(file_path)  # Emit saved signal
-                
-                QMessageBox.information(
+            filepath = attachment.get('filepath') or attachment.get('local_path')
+            if not filepath or not os.path.exists(filepath):
+                QMessageBox.warning(
                     self,
-                    "Download Complete",
-                    f"Attachment saved to:\n{file_path}"
+                    "Error",
+                    "Attachment file not found."
                 )
-            else:
-                raise FileNotFoundError("Attachment file not found")
-                
+                return
+            
+            # Open with default application
+            import platform
+            if platform.system() == 'Windows':
+                os.startfile(filepath)
+            elif platform.system() == 'Darwin':  # macOS
+                os.system(f'open "{filepath}"')
+            else:  # Linux
+                os.system(f'xdg-open "{filepath}"')
+            
+            self.attachment_downloaded.emit(filepath)
+            
         except Exception as e:
-            logger.error(f"Error downloading attachment: {str(e)}")
             QMessageBox.warning(
                 self,
-                "Download Failed",
-                f"Failed to download attachment:\n{str(e)}"
+                "Error",
+                f"Failed to open attachment: {str(e)}"
             )
-        finally:
-            self.progress_bar.setVisible(False)
     
-    def remove_attachment(self, attachment):
-        """Remove an attachment from the list."""
-        reply = QMessageBox.question(
-            self,
-            "Remove Attachment",
-            f"Remove attachment '{attachment['filename']}'?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
-        )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            # Find and remove the attachment
-            for i, att in enumerate(self.attachments):
-                if att['filename'] == attachment['filename']:
-                    self.attachments.pop(i)
-                    break
+    def save_attachment(self, attachment: Dict):
+        """Save attachment to user-selected location."""
+        try:
+            # Get source filepath
+            source = attachment.get('filepath') or attachment.get('local_path')
+            if not source or not os.path.exists(source):
+                QMessageBox.warning(
+                    self,
+                    "Error",
+                    "Attachment file not found."
+                )
+                return
             
-            self.update_list()
+            # Get save location
+            filename = attachment['filename']
+            target, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save Attachment",
+                filename,
+                "All Files (*.*)"
+            )
+            
+            if not target:
+                return
+            
+            # Copy file
+            shutil.copy2(source, target)
+            self.attachment_saved.emit(target)
+            
+            QMessageBox.information(
+                self,
+                "Success",
+                f"Attachment saved to {target}"
+            )
+            
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "Error",
+                f"Failed to save attachment: {str(e)}"
+            )
+    
+    def remove_attachment(self, attachment: Dict):
+        """Remove an attachment from the list."""
+        try:
+            # Confirm removal
+            reply = QMessageBox.question(
+                self,
+                "Remove Attachment",
+                f"Remove attachment {attachment['filename']}?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            
+            if reply == QMessageBox.StandardButton.No:
+                return
+            
+            # Remove from list
+            index = self.attachments.index(attachment)
+            self.attachments.pop(index)
+            self.list_widget.takeItem(index)
+            
+            # Update header visibility
+            self.header.setVisible(bool(self.attachments))
+            
             self.attachment_removed.emit(attachment['filename'])
+            
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "Error",
+                f"Failed to remove attachment: {str(e)}"
+            )
     
     def dragEnterEvent(self, event):
-        """Handle drag enter events for file drops."""
+        """Handle drag enter event for attachment drag-and-drop."""
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
     
     def dropEvent(self, event):
-        """Handle file drops for adding attachments."""
-        for url in event.mimeData().urls():
-            file_path = url.toLocalFile()
-            if os.path.exists(file_path):
-                # Create attachment data
-                mime_type, _ = mimetypes.guess_type(file_path)
-                attachment = {
-                    'filename': os.path.basename(file_path),
-                    'path': file_path,
-                    'content_type': mime_type or 'application/octet-stream',
-                    'size': os.path.getsize(file_path)
-                }
-                
-                self.attachments.append(attachment)
-        
-        self.update_list()
-        event.acceptProposedAction()
+        """Handle drop event for attachment drag-and-drop."""
+        try:
+            for url in event.mimeData().urls():
+                filepath = url.toLocalFile()
+                if os.path.isfile(filepath):
+                    # Create attachment data
+                    filename = os.path.basename(filepath)
+                    mime_type, _ = mimetypes.guess_type(filepath)
+                    size = os.path.getsize(filepath)
+                    
+                    attachment = {
+                        'filename': filename,
+                        'content_type': mime_type or 'application/octet-stream',
+                        'size': size,
+                        'filepath': filepath
+                    }
+                    
+                    # Add to list
+                    self.attachments.append(attachment)
+                    self.add_attachment_item(attachment)
+                    self.header.setVisible(True)
+            
+            event.acceptProposedAction()
+            
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "Error",
+                f"Failed to add attachment: {str(e)}"
+            )

@@ -29,7 +29,7 @@ class EmailCache:
         self._init_database()
     
     def _init_database(self):
-        """Initialize the SQLite database schema."""
+        """Initialize SQLite database with required tables."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
@@ -41,14 +41,13 @@ class EmailCache:
                     folder TEXT NOT NULL,
                     subject TEXT,
                     sender TEXT,
-                    recipients TEXT,
+                    recipients TEXT,  -- JSON array
                     date TEXT,
                     body TEXT,
                     has_attachments BOOLEAN,
-                    metadata TEXT,
+                    metadata TEXT,    -- JSON object
                     last_updated TEXT,
-                    flags TEXT,
-                    UNIQUE(message_id, account_email)
+                    flags TEXT        -- JSON array
                 )
             """)
             
@@ -60,18 +59,92 @@ class EmailCache:
                     filename TEXT NOT NULL,
                     content_type TEXT,
                     size INTEGER,
-                    local_path TEXT,
+                    local_path TEXT NOT NULL,
                     last_updated TEXT,
-                    FOREIGN KEY(message_id) REFERENCES emails(message_id)
-                    ON DELETE CASCADE
+                    FOREIGN KEY (message_id) REFERENCES emails(message_id)
+                        ON DELETE CASCADE
                 )
             """)
             
             # Create indexes
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_account_folder ON emails(account_email, folder)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_date ON emails(date)")
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_emails_account
+                ON emails(account_email, folder)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_emails_date
+                ON emails(last_updated)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_attachments_message
+                ON attachments(message_id)
+            """)
             
             conn.commit()
+    
+    @handle_errors
+    def get_cached_emails(self, account_email: str, folder: str,
+                         limit: int = 50, offset: int = 0) -> List[Dict]:
+        """
+        Retrieve cached emails for an account and folder.
+        
+        Args:
+            account_email (str): Email account to get emails for
+            folder (str): Folder name
+            limit (int): Maximum number of emails to return
+            offset (int): Number of emails to skip
+        
+        Returns:
+            List[Dict]: List of cached email data
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            # Get emails
+            cursor.execute("""
+                SELECT message_id, subject, sender, recipients, date,
+                       body, has_attachments, metadata, flags
+                FROM emails
+                WHERE account_email = ? AND folder = ?
+                ORDER BY date DESC
+                LIMIT ? OFFSET ?
+            """, (account_email, folder, limit, offset))
+            
+            emails = []
+            for row in cursor.fetchall():
+                # Get attachments for this email
+                cursor.execute("""
+                    SELECT filename, content_type, size, local_path
+                    FROM attachments
+                    WHERE message_id = ?
+                """, (row[0],))
+                
+                attachments = []
+                for att_row in cursor.fetchall():
+                    attachments.append({
+                        'filename': att_row[0],
+                        'content_type': att_row[1],
+                        'size': att_row[2],
+                        'local_path': att_row[3]
+                    })
+                
+                # Build email data dictionary
+                email_data = {
+                    'message_id': row[0],
+                    'subject': row[1],
+                    'from': row[2],
+                    'recipients': json.loads(row[3]),
+                    'date': datetime.fromisoformat(row[4]),
+                    'body': row[5],
+                    'has_attachments': bool(row[6]),
+                    'metadata': json.loads(row[7]),
+                    'flags': json.loads(row[8]),
+                    'attachments': attachments
+                }
+                
+                emails.append(email_data)
+            
+            return emails
     
     @handle_errors
     def cache_email(self, account_email: str, folder: str, email_data: Dict):
@@ -139,63 +212,6 @@ class EmailCache:
                     ))
             
             conn.commit()
-    
-    @handle_errors
-    def get_cached_emails(self, account_email: str, folder: str, 
-                         limit: int = 50, offset: int = 0) -> List[Dict]:
-        """
-        Retrieve cached emails for a folder.
-        
-        Args:
-            account_email (str): Email account
-            folder (str): Folder name
-            limit (int): Maximum number of emails to return
-            offset (int): Number of emails to skip
-        
-        Returns:
-            list: List of cached email data
-        """
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            # Get emails
-            cursor.execute("""
-                SELECT * FROM emails
-                WHERE account_email = ? AND folder = ?
-                ORDER BY date DESC
-                LIMIT ? OFFSET ?
-            """, (account_email, folder, limit, offset))
-            
-            emails = []
-            for row in cursor.fetchall():
-                email_data = dict(row)
-                
-                # Convert JSON strings back to objects
-                email_data['recipients'] = json.loads(email_data['recipients'])
-                email_data['metadata'] = json.loads(email_data['metadata'])
-                email_data['flags'] = json.loads(email_data['flags'])
-                
-                # Get attachments if any
-                if email_data['has_attachments']:
-                    cursor.execute("""
-                        SELECT * FROM attachments
-                        WHERE message_id = ?
-                    """, (email_data['message_id'],))
-                    
-                    attachments = []
-                    for att_row in cursor.fetchall():
-                        attachment = dict(att_row)
-                        # Load attachment content if needed
-                        with open(attachment['local_path'], 'rb') as f:
-                            attachment['content'] = f.read()
-                        attachments.append(attachment)
-                    
-                    email_data['attachments'] = attachments
-                
-                emails.append(email_data)
-            
-            return emails
     
     @handle_errors
     def clear_old_cache(self, days: int = 30):

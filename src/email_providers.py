@@ -11,10 +11,38 @@ import requests
 from dotenv import load_dotenv
 from utils.logger import logger
 from utils.error_handler import handle_errors
-from security.credential_manager import CredentialManager
+from services.credential_service import CredentialService
+from abc import ABC, abstractmethod
 
 # Load environment variables from .env file
 load_dotenv()
+
+class Provider(Enum):
+    """Supported email providers."""
+    GMAIL = "Gmail"
+    OUTLOOK = "Outlook"
+    YAHOO = "Yahoo Mail"
+    CUSTOM = "Custom"
+
+@dataclass
+class ProviderConfig:
+    """Email provider configuration."""
+    name: str
+    imap_server: str
+    imap_port: int
+    imap_ssl: bool
+    smtp_server: str
+    smtp_port: int
+    smtp_ssl: bool
+    oauth_supported: bool = False
+    setup_url: Optional[str] = None
+    token_url: Optional[str] = None
+    app_password_url: Optional[str] = None
+    help_url: Optional[str] = None
+    oauth_scopes: Optional[List[str]] = None
+    redirect_uri: Optional[str] = None
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
 
 class OAuthCallbackHandler(BaseHTTPRequestHandler):
     """Handle OAuth2 callback requests."""
@@ -31,7 +59,7 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
                 error_msg = f"OAuth Error: {error}"
                 if 'error_description' in query_components:
                     error_msg += f" - {query_components['error_description'][0]}"
-                logger.logger.error(error_msg)
+                logger.error(error_msg)
                 
                 # Store the error
                 self.server.oauth_error = error_msg
@@ -71,7 +99,7 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
             
         except Exception as e:
             error_msg = f"OAuth callback error: {str(e)}"
-            logger.logger.error(error_msg)
+            logger.error(error_msg)
             self.server.oauth_error = error_msg
             self.server.oauth_code = None
             
@@ -80,33 +108,6 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
             self.send_header('Content-type', 'text/html')
             self.end_headers()
             self.wfile.write(b"Authentication failed! Please check the application logs and try again.")
-
-class Provider(Enum):
-    """Supported email providers."""
-    GMAIL = "gmail"
-    OUTLOOK = "outlook"
-    YAHOO = "yahoo"
-    CUSTOM = "custom"
-
-@dataclass
-class ProviderConfig:
-    """Configuration for an email provider."""
-    name: str
-    imap_server: str
-    imap_port: int
-    imap_ssl: bool
-    smtp_server: str
-    smtp_port: int
-    smtp_ssl: bool
-    oauth_supported: bool
-    setup_url: str
-    app_password_url: Optional[str] = None
-    help_url: Optional[str] = None
-    oauth_scopes: Optional[List[str]] = None
-    client_id: Optional[str] = None
-    client_secret: Optional[str] = None
-    token_url: Optional[str] = None
-    redirect_uri: Optional[str] = None
 
 class EmailProviders:
     """
@@ -134,7 +135,8 @@ class EmailProviders:
             oauth_scopes=[
                 "https://mail.google.com/",
                 "https://www.googleapis.com/auth/gmail.modify",
-                "https://www.googleapis.com/auth/gmail.readonly"
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/userinfo.email"
             ],
             redirect_uri=DEFAULT_REDIRECT_URI,
             client_id=os.getenv("GOOGLE_CLIENT_ID"),
@@ -150,13 +152,17 @@ class EmailProviders:
             smtp_ssl=True,
             oauth_supported=True,
             setup_url="https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+            token_url="https://login.microsoftonline.com/common/oauth2/v2.0/token",
             app_password_url="https://account.microsoft.com/security",
             help_url="https://support.microsoft.com/account-billing/using-app-passwords-with-apps-that-don-t-support-two-step-verification-5896ed9b-4263-e681-128a-a6f2979a7944",
             oauth_scopes=[
                 "offline_access",
                 "https://outlook.office.com/IMAP.AccessAsUser.All",
                 "https://outlook.office.com/SMTP.Send"
-            ]
+            ],
+            redirect_uri=DEFAULT_REDIRECT_URI,
+            client_id=os.getenv("OUTLOOK_CLIENT_ID"),
+            client_secret=os.getenv("OUTLOOK_CLIENT_SECRET")
         ),
         Provider.YAHOO: ProviderConfig(
             name="Yahoo Mail",
@@ -168,8 +174,16 @@ class EmailProviders:
             smtp_ssl=True,
             oauth_supported=True,
             setup_url="https://api.login.yahoo.com/oauth2/request_auth",
+            token_url="https://api.login.yahoo.com/oauth2/get_token",
             app_password_url="https://login.yahoo.com/account/security/app-passwords",
-            help_url="https://help.yahoo.com/kb/generate-third-party-passwords-sln15241.html"
+            help_url="https://help.yahoo.com/kb/generate-third-party-passwords-sln15241.html",
+            oauth_scopes=[
+                "mail-w",
+                "mail-r"
+            ],
+            redirect_uri=DEFAULT_REDIRECT_URI,
+            client_id=os.getenv("YAHOO_CLIENT_ID"),
+            client_secret=os.getenv("YAHOO_CLIENT_SECRET")
         )
     }
     
@@ -183,16 +197,29 @@ class EmailProviders:
         """
         server = HTTPServer(('localhost', 8080), OAuthCallbackHandler)
         server.oauth_code = None
+        server.oauth_error = None
         return server, server.oauth_code
     
     @classmethod
+    def get_provider_config(cls, provider: Provider) -> ProviderConfig:
+        """Get provider configuration."""
+        return cls.PROVIDERS.get(provider)
+    
+    @classmethod
+    def is_oauth_provider(cls, provider: Provider) -> bool:
+        """Check if provider supports OAuth."""
+        config = cls.get_provider_config(provider)
+        return config and config.oauth_supported
+    
+    @classmethod
     @handle_errors
-    def authenticate_gmail(cls, email: str) -> Dict:
+    def authenticate_oauth(cls, email: str, provider: Provider) -> Dict:
         """
-        Perform Gmail OAuth2 authentication flow.
+        Perform OAuth2 authentication flow for any supported provider.
         
         Args:
-            email (str): Gmail address to authenticate
+            email (str): Email address to authenticate
+            provider (Provider): Email provider
         
         Returns:
             Dict: OAuth tokens and credentials
@@ -200,40 +227,41 @@ class EmailProviders:
         Raises:
             ValueError: If OAuth credentials are missing or authentication fails
         """
-        config = cls.get_provider_config(Provider.GMAIL)
+        config = cls.get_provider_config(provider)
         
-        # Debug logging
-        logger.logger.debug("Starting Gmail OAuth authentication flow")
-        logger.logger.debug(f"Using email: {email}")
-        logger.logger.debug(f"Client ID configured: {bool(config.client_id)}")
-        logger.logger.debug(f"Client Secret configured: {bool(config.client_secret)}")
+        if not config or not config.oauth_supported:
+            raise ValueError(f"{provider.value} does not support OAuth authentication")
         
         if not config.client_id or not config.client_secret:
-            error_msg = "Gmail OAuth credentials missing. Check your .env file."
-            logger.logger.error(error_msg)
-            raise ValueError(error_msg)
+            raise ValueError(f"{provider.value} OAuth credentials missing. Check your .env file.")
         
         # Start local server for OAuth callback
         server = HTTPServer(('localhost', 8080), OAuthCallbackHandler)
         server.oauth_code = None
         server.oauth_error = None
         
-        # Generate authorization URL with all required scopes
-        auth_params = {
-            'client_id': config.client_id,
-            'redirect_uri': config.redirect_uri,
-            'response_type': 'code',
-            'scope': ' '.join(config.oauth_scopes),
-            'access_type': 'offline',
-            'prompt': 'consent',
-            'login_hint': email
-        }
-        auth_url = f"{config.setup_url}?{urlencode(auth_params)}"
-        
-        logger.logger.debug(f"Opening authorization URL: {auth_url}")
-        webbrowser.open(auth_url)
-        
         try:
+            # Generate authorization URL
+            auth_params = {
+                'client_id': config.client_id,
+                'redirect_uri': config.redirect_uri,
+                'response_type': 'code',
+                'scope': ' '.join(config.oauth_scopes),
+                'access_type': 'offline',
+                'prompt': 'consent'
+            }
+            
+            # Add provider-specific parameters
+            if provider == Provider.GMAIL:
+                auth_params['login_hint'] = email
+            elif provider == Provider.OUTLOOK:
+                auth_params['response_mode'] = 'query'
+            elif provider == Provider.YAHOO:
+                auth_params['language'] = 'en-us'
+            
+            auth_url = f"{config.setup_url}?{urlencode(auth_params)}"
+            webbrowser.open(auth_url)
+            
             # Wait for callback
             server.handle_request()
             
@@ -244,50 +272,68 @@ class EmailProviders:
             if not server.oauth_code:
                 raise ValueError("No authorization code received")
             
-            logger.logger.debug("Authorization code received, exchanging for tokens")
-            
             # Exchange code for tokens
             token_data = {
                 'client_id': config.client_id,
                 'client_secret': config.client_secret,
                 'code': server.oauth_code,
                 'redirect_uri': config.redirect_uri,
-                'grant_type': 'authorization_code'
+                'grant_type': 'authorization_code',
+                'access_type': 'offline'
             }
             
             response = requests.post(config.token_url, data=token_data)
             
             if not response.ok:
                 error_msg = f"Token exchange failed: {response.status_code} - {response.text}"
-                logger.logger.error(error_msg)
+                logger.error(error_msg)
                 raise ValueError(error_msg)
             
             tokens = response.json()
-            logger.logger.debug("Successfully obtained OAuth tokens")
+            
+            # For Gmail, get user info to get email
+            if provider == Provider.GMAIL:
+                userinfo_response = requests.get(
+                    'https://www.googleapis.com/oauth2/v2/userinfo',
+                    headers={'Authorization': f'Bearer {tokens["access_token"]}'}
+                )
+                if userinfo_response.ok:
+                    userinfo = userinfo_response.json()
+                    tokens['email'] = userinfo.get('email')
+                    tokens['email_verified'] = userinfo.get('verified_email', False)
+                else:
+                    logger.error(f"Failed to get Gmail user info: {userinfo_response.status_code} - {userinfo_response.text}")
             
             # Store tokens securely
-            credential_manager = CredentialManager()
-            credential_manager.store_oauth_tokens(email, tokens)
+            credential_service = CredentialService()
+            credential_service.store_account_credentials(email, tokens, provider.value)
+            
+            # Update token expiry
+            if 'expires_in' in tokens:
+                credential_service.update_token_expiry(email, int(tokens['expires_in']))
             
             return tokens
             
         finally:
             server.server_close()
-            logger.logger.debug("OAuth server closed")
     
     @classmethod
-    def refresh_gmail_token(cls, email: str, refresh_token: str) -> Dict:
+    def refresh_oauth_token(cls, email: str, refresh_token: str, provider: Provider) -> Dict:
         """
-        Refresh Gmail OAuth2 access token.
+        Refresh OAuth2 access token for any supported provider.
         
         Args:
-            email (str): Gmail address
+            email (str): Email address
             refresh_token (str): OAuth refresh token
+            provider (Provider): Email provider
         
         Returns:
             Dict: New OAuth tokens
         """
-        config = cls.get_provider_config(Provider.GMAIL)
+        config = cls.get_provider_config(provider)
+        
+        if not config or not config.oauth_supported:
+            raise ValueError(f"{provider.value} does not support OAuth authentication")
         
         token_data = {
             'client_id': config.client_id,
@@ -296,15 +342,22 @@ class EmailProviders:
             'grant_type': 'refresh_token'
         }
         
+        # Add provider-specific parameters
+        if provider == Provider.OUTLOOK:
+            token_data['scope'] = ' '.join(config.oauth_scopes)
+        
         response = requests.post(config.token_url, data=token_data)
         response.raise_for_status()
         
         tokens = response.json()
-        tokens['refresh_token'] = refresh_token  # Keep existing refresh token
         
-        # Update stored tokens
-        credential_manager = CredentialManager()
-        credential_manager.store_oauth_tokens(email, tokens)
+        # Some providers don't return the refresh token in the refresh response
+        if 'refresh_token' not in tokens:
+            tokens['refresh_token'] = refresh_token
+        
+        # Store updated tokens
+        credential_service = CredentialService()
+        credential_service.store_account_credentials(email, tokens, provider.value)
         
         return tokens
     
@@ -331,82 +384,25 @@ class EmailProviders:
         return Provider.CUSTOM
     
     @classmethod
-    def get_provider_config(cls, provider: Provider) -> ProviderConfig:
-        """
-        Get configuration for a provider.
-        
-        Args:
-            provider (Provider): Email provider
-        
-        Returns:
-            ProviderConfig: Provider configuration
-        """
-        return cls.PROVIDERS.get(provider)
-    
-    @classmethod
-    def get_config_for_email(cls, email: str) -> Optional[ProviderConfig]:
-        """
-        Get configuration for an email address.
-        
-        Args:
-            email (str): Email address
-        
-        Returns:
-            Optional[ProviderConfig]: Provider configuration if detected
-        """
-        provider = cls.detect_provider(email)
-        return cls.get_provider_config(provider)
-    
-    @classmethod
     def open_provider_setup(cls, provider: Provider, email: Optional[str] = None):
-        """
-        Open provider's setup/login page in default browser.
-        
-        Args:
-            provider (Provider): Email provider
-            email (str, optional): Pre-fill email address
-        """
+        """Open provider setup page in browser."""
         config = cls.get_provider_config(provider)
-        if not config:
-            return
-        
-        url = config.setup_url
-        if email and provider == Provider.GMAIL:
-            params = {
-                'identifier': email,
-                'service': 'mail'
-            }
-            url = f"{url}?{urlencode(params)}"
-        elif email and provider == Provider.OUTLOOK:
-            params = {
-                'login_hint': email,
-                'response_type': 'code',
-                'prompt': 'login'
-            }
-            url = f"{url}?{urlencode(params)}"
-        
-        webbrowser.open(url)
+        if config and config.setup_url:
+            webbrowser.open(config.setup_url)
     
     @classmethod
     def open_app_password_setup(cls, provider: Provider):
-        """
-        Open provider's app password setup page.
-        
-        Args:
-            provider (Provider): Email provider
-        """
+        """Open app password setup page in browser."""
         config = cls.get_provider_config(provider)
         if config and config.app_password_url:
             webbrowser.open(config.app_password_url)
+  
+class EmailProvider(ABC):
+    @abstractmethod
+    def connect(self):
+        pass
     
-    @classmethod
-    def open_help(cls, provider: Provider):
-        """
-        Open provider's help page.
-        
-        Args:
-            provider (Provider): Email provider
-        """
-        config = cls.get_provider_config(provider)
-        if config and config.help_url:
-            webbrowser.open(config.help_url) 
+    @abstractmethod
+    def validate_credentials(self):
+        pass
+  

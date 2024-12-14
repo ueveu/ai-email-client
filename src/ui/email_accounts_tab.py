@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QPushButton, 
                            QTableWidget, QTableWidgetItem, QHBoxLayout,
-                           QMessageBox, QSplitter)
+                           QMessageBox, QSplitter, QHeaderView)
 from PyQt6.QtCore import pyqtSignal, Qt
 from ui.email_account_dialog import EmailAccountDialog
 from ui.folder_tree import FolderTree
@@ -27,20 +27,18 @@ class EmailAccountsTab(QWidget):
         self.setup_ui()
     
     def setup_ui(self):
-        """Sets up the UI components for the email accounts tab."""
+        """Set up the UI components."""
         layout = QVBoxLayout(self)
         
-        # Create horizontal layout for accounts and folders
-        h_layout = QHBoxLayout()
-        
-        # Create left panel for accounts
+        # Create accounts panel
         accounts_panel = QWidget()
         accounts_layout = QVBoxLayout(accounts_panel)
         
-        # Create account list table
+        # Create accounts table
         self.accounts_table = QTableWidget()
         self.accounts_table.setColumnCount(3)
-        self.accounts_table.setHorizontalHeaderLabels(["Email", "Server", "Status"])
+        self.accounts_table.setHorizontalHeaderLabels(["Email", "Server Settings", "Status"])
+        self.accounts_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.accounts_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.accounts_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         accounts_layout.addWidget(self.accounts_table)
@@ -48,138 +46,37 @@ class EmailAccountsTab(QWidget):
         # Create button layout
         button_layout = QHBoxLayout()
         
-        # Create buttons
+        # Add account button
         self.add_account_btn = QPushButton("Add Account")
         self.add_account_btn.clicked.connect(self.add_account)
+        button_layout.addWidget(self.add_account_btn)
         
+        # Edit account button
         self.edit_account_btn = QPushButton("Edit Account")
         self.edit_account_btn.clicked.connect(self.edit_account)
         self.edit_account_btn.setEnabled(False)
+        button_layout.addWidget(self.edit_account_btn)
         
+        # Remove account button
         self.remove_account_btn = QPushButton("Remove Account")
         self.remove_account_btn.clicked.connect(self.remove_account)
         self.remove_account_btn.setEnabled(False)
-        
-        # Add buttons to layout
-        button_layout.addWidget(self.add_account_btn)
-        button_layout.addWidget(self.edit_account_btn)
         button_layout.addWidget(self.remove_account_btn)
-        button_layout.addStretch()
         
+        button_layout.addStretch()
         accounts_layout.addLayout(button_layout)
         
-        # Create right panel with splitter for folders and emails
-        right_panel = QSplitter(Qt.Orientation.Vertical)
-        
-        # Create folder tree
-        self.folder_tree = FolderTree()
-        right_panel.addWidget(self.folder_tree)
-        
-        # Create email list
-        self.email_list = EmailListView()
-        right_panel.addWidget(self.email_list)
-        
-        # Set initial splitter sizes (30% folders, 70% emails)
-        right_panel.setSizes([300, 700])
-        
-        # Add panels to horizontal layout with splitter
-        h_splitter = QSplitter(Qt.Orientation.Horizontal)
-        h_splitter.addWidget(accounts_panel)
-        h_splitter.addWidget(right_panel)
-        h_splitter.setSizes([300, 900])  # 25% accounts, 75% folders/emails
-        
-        # Add splitter to main layout
-        layout.addWidget(h_splitter)
+        # Add accounts panel to main layout
+        layout.addWidget(accounts_panel)
         
         # Connect signals
         self.accounts_table.itemSelectionChanged.connect(self.on_selection_changed)
-        self.folder_tree.folder_selected.connect(self.on_folder_selected)
-        self.folder_tree.folder_created.connect(self.on_folder_created)
-        self.folder_tree.folder_deleted.connect(self.on_folder_deleted)
-        self.folder_tree.folder_renamed.connect(self.on_folder_renamed)
-        self.email_list.email_moved.connect(self.on_email_moved)
-        
-        # Connect email marking signals
-        self.email_list.email_mark_read.connect(self.on_email_mark_read)
-        self.email_list.email_mark_unread.connect(self.on_email_mark_unread)
-        self.email_list.email_mark_flagged.connect(self.on_email_mark_flagged)
-        self.email_list.email_mark_unflagged.connect(self.on_email_mark_unflagged)
-        
-        # Connect new email operation signals
-        self.email_list.email_reply.connect(self.on_email_reply)
-        self.email_list.email_reply_all.connect(self.on_email_reply_all)
-        self.email_list.email_forward.connect(self.on_email_forward)
-        self.email_list.email_delete.connect(self.on_email_delete)
     
-    @handle_errors
-    def on_folder_selected(self, folder_name):
-        """Handle folder selection."""
-        logger.logger.debug(f"Selected folder: {folder_name}")
-        if hasattr(self.parent, 'email_manager'):
-            # Fetch emails from selected folder
-            emails = self.parent.email_manager.fetch_emails(folder=folder_name)
-            self.email_list.update_emails(emails, folder_name)
-            
-            # Update folder status
-            status = self.parent.email_manager.get_folder_status(folder_name)
-            if status:
-                self.folder_tree.update_folder_status(folder_name, status)
-    
-    @handle_errors
-    def on_folder_created(self, folder_name):
-        """Handle folder creation."""
-        if hasattr(self.parent, 'email_manager'):
-            if self.parent.email_manager.create_folder(folder_name):
-                self.refresh_folders()
-    
-    @handle_errors
-    def on_folder_deleted(self, folder_name):
-        """Handle folder deletion."""
-        if hasattr(self.parent, 'email_manager'):
-            if self.parent.email_manager.delete_folder(folder_name):
-                self.refresh_folders()
-    
-    @handle_errors
-    def on_folder_renamed(self, old_name, new_name):
-        """Handle folder renaming."""
-        if hasattr(self.parent, 'email_manager'):
-            if self.parent.email_manager.rename_folder(old_name, new_name):
-                self.refresh_folders()
-    
-    @handle_errors
-    def on_email_moved(self, message_id, target_folder):
-        """Handle email movement between folders."""
-        if hasattr(self.parent, 'email_manager'):
-            if self.parent.email_manager.move_email(message_id, target_folder):
-                # Refresh current folder
-                current_folder = self.folder_tree.selected_folder
-                if current_folder:
-                    self.on_folder_selected(current_folder)
-                
-                # Update folder status
-                self.refresh_folder_status()
-    
-    @handle_errors
-    def refresh_folder_status(self):
-        """Refresh status for all folders."""
-        if not hasattr(self.parent, 'email_manager'):
-            return
-            
-        for folder_name in self.folder_tree.folder_items:
-            status = self.parent.email_manager.get_folder_status(folder_name)
-            if status:
-                self.folder_tree.update_folder_status(folder_name, status)
-    
-    @handle_errors
-    def refresh_folders(self):
-        """Refresh the folder list and status."""
-        if hasattr(self.parent, 'email_manager'):
-            folders = self.parent.email_manager.list_folders()
-            self.folder_tree.update_folders(folders)
-            self.refresh_folder_status()
-            
-            # Update available folders in email list
-            self.email_list.update_folder_list(folders)
+    def on_selection_changed(self):
+        """Handle selection changes in the accounts table."""
+        has_selection = bool(self.accounts_table.selectedItems())
+        self.edit_account_btn.setEnabled(has_selection)
+        self.remove_account_btn.setEnabled(has_selection)
     
     def load_accounts(self, accounts):
         """
@@ -188,12 +85,12 @@ class EmailAccountsTab(QWidget):
         Args:
             accounts (list): List of account data dictionaries
         """
-        logger.logger.debug(f"Loading {len(accounts)} accounts into table")
+        logger.debug(f"Loading {len(accounts)} accounts into table")
         self.accounts = accounts
         self.accounts_table.setRowCount(0)
         
         for account in accounts:
-            logger.logger.debug(f"Adding account to table: {account['email']}")
+            logger.debug(f"Adding account to table: {account['email']}")
             row = self.accounts_table.rowCount()
             self.accounts_table.insertRow(row)
             
@@ -201,10 +98,14 @@ class EmailAccountsTab(QWidget):
             self.accounts_table.setItem(row, 0, QTableWidgetItem(account['email']))
             server_text = f"IMAP: {account['imap_server']}, SMTP: {account['smtp_server']}"
             self.accounts_table.setItem(row, 1, QTableWidgetItem(server_text))
-            self.accounts_table.setItem(row, 2, QTableWidgetItem("Connected"))  # TODO: Check actual status
+            
+            # Check account status
+            has_credentials = bool(self.credential_manager.get_email_credentials(account['email']))
+            status = "Connected" if has_credentials else "Not Connected"
+            self.accounts_table.setItem(row, 2, QTableWidgetItem(status))
         
         self.accounts_table.resizeColumnsToContents()
-        logger.logger.debug("Finished loading accounts into table")
+        logger.debug("Finished loading accounts into table")
     
     def add_account(self):
         """Opens dialog to add a new email account."""
@@ -212,6 +113,11 @@ class EmailAccountsTab(QWidget):
         if dialog.exec():
             account_data = dialog.account_data
             self.account_added.emit(account_data)
+            
+            # Refresh table
+            if account_data:
+                self.accounts.append(account_data)
+                self.load_accounts(self.accounts)
     
     def edit_account(self):
         """Opens dialog to edit the selected account."""
@@ -228,6 +134,13 @@ class EmailAccountsTab(QWidget):
         if dialog.exec():
             updated_data = dialog.account_data
             self.account_updated.emit(email, updated_data)
+            
+            # Update accounts list and refresh table
+            for i, acc in enumerate(self.accounts):
+                if acc['email'] == email:
+                    self.accounts[i] = updated_data
+                    break
+            self.load_accounts(self.accounts)
     
     @handle_errors
     def remove_account(self, confirmed=False):
@@ -252,115 +165,12 @@ class EmailAccountsTab(QWidget):
             if reply == QMessageBox.StandardButton.No:
                 return
         
-        logger.logger.debug(f"Removing account: {email}")
+        logger.debug(f"Removing account: {email}")
         self.account_removed.emit(email)
-    
-    def on_selection_changed(self):
-        """Handle table selection changes."""
-        has_selection = len(self.accounts_table.selectedItems()) > 0
-        self.edit_account_btn.setEnabled(has_selection)
-        self.remove_account_btn.setEnabled(has_selection)
-    
-    @handle_errors
-    def on_email_mark_read(self, message_id):
-        """Handle marking email as read."""
-        if hasattr(self.parent, 'email_manager'):
-            if self.parent.email_manager.mark_read(message_id):
-                # Refresh current folder to update UI
-                current_folder = self.folder_tree.selected_folder
-                if current_folder:
-                    self.on_folder_selected(current_folder)
-    
-    @handle_errors
-    def on_email_mark_unread(self, message_id):
-        """Handle marking email as unread."""
-        if hasattr(self.parent, 'email_manager'):
-            if self.parent.email_manager.mark_unread(message_id):
-                # Refresh current folder to update UI
-                current_folder = self.folder_tree.selected_folder
-                if current_folder:
-                    self.on_folder_selected(current_folder)
-    
-    @handle_errors
-    def on_email_mark_flagged(self, message_id):
-        """Handle flagging email."""
-        if hasattr(self.parent, 'email_manager'):
-            if self.parent.email_manager.mark_flagged(message_id):
-                # Refresh current folder to update UI
-                current_folder = self.folder_tree.selected_folder
-                if current_folder:
-                    self.on_folder_selected(current_folder)
-    
-    @handle_errors
-    def on_email_mark_unflagged(self, message_id):
-        """Handle unflagging email."""
-        if hasattr(self.parent, 'email_manager'):
-            if self.parent.email_manager.mark_unflagged(message_id):
-                # Refresh current folder to update UI
-                current_folder = self.folder_tree.selected_folder
-                if current_folder:
-                    self.on_folder_selected(current_folder)
-    
-    @handle_errors
-    def on_email_reply(self, email_data):
-        """Handle email reply."""
-        if not hasattr(self.parent, 'email_manager'):
-            return
         
-        try:
-            # Send the email
-            success = self.parent.email_manager.send_email(
-                to_addr=", ".join(email_data['to']),
-                subject=email_data['subject'],
-                body=email_data['body'],
-                cc=", ".join(email_data['cc']),
-                bcc=", ".join(email_data['bcc']),
-                attachments=[att['filepath'] for att in email_data['attachments']]
-            )
-            
-            if success:
-                QMessageBox.information(
-                    self,
-                    "Email Sent",
-                    "Your reply has been sent successfully."
-                )
-            else:
-                QMessageBox.warning(
-                    self,
-                    "Send Failed",
-                    "Failed to send the reply. Please check your connection and try again."
-                )
-                
-        except Exception as e:
-            logger.error(f"Error sending reply: {str(e)}")
-            QMessageBox.critical(
-                self,
-                "Error",
-                f"An error occurred while sending the reply: {str(e)}"
-            )
-    
-    @handle_errors
-    def on_email_reply_all(self, email_data):
-        """Handle reply all."""
-        # Use the same sending logic as regular reply
-        self.on_email_reply(email_data)
-    
-    @handle_errors
-    def on_email_forward(self, email_data):
-        """Handle email forward."""
-        # Use the same sending logic as regular reply
-        self.on_email_reply(email_data)
-    
-    @handle_errors
-    def on_email_delete(self, message_id):
-        """Handle email deletion request."""
-        if hasattr(self.parent, 'email_manager'):
-            # Move to trash instead of permanent deletion
-            if self.parent.email_manager.move_email(message_id, 'Trash'):
-                # Refresh current folder
-                current_folder = self.folder_tree.selected_folder
-                if current_folder:
-                    self.on_folder_selected(current_folder)
-                
-                # Update folder status
-                self.refresh_folder_status()
+        # Update accounts list and refresh table
+        self.accounts = [acc for acc in self.accounts if acc['email'] != email]
+        self.load_accounts(self.accounts)
+        
+        # Clear credentials
+        self.credential_manager.remove_email_credentials(email)

@@ -11,7 +11,7 @@ from email_cache import EmailCache
 from email_threading import ThreadManager
 from email_attachments import AttachmentManager
 from email_providers import EmailProviders, Provider
-from security.credential_manager import CredentialManager
+from services.credential_service import CredentialService
 import os
 import mimetypes
 from utils.logger import logger
@@ -31,15 +31,19 @@ class EmailManager:
             account_data (dict): Email account configuration
         """
         self.account_data = account_data
+        self.credential_service = CredentialService()
         self.imap_connection = None
         self.smtp_connection = None
         self.current_folder = None
-        self.credential_manager = CredentialManager()
         
         # Initialize managers
         self.cache = EmailCache()
         self.thread_manager = ThreadManager()
         self.attachment_manager = AttachmentManager()
+        
+        # Detect provider
+        self.provider = EmailProviders.detect_provider(account_data['email'])
+        self.provider_config = EmailProviders.get_provider_config(self.provider)
     
     def connect_imap(self):
         """
@@ -49,95 +53,105 @@ class EmailManager:
             bool: True if connection successful, False otherwise
         """
         try:
-            logger.logger.debug(f"Connecting to IMAP server: {self.account_data['imap_server']}")
+            # Close existing connection if any
+            if self.imap_connection:
+                try:
+                    self.imap_connection.close()
+                    self.imap_connection.logout()
+                except:
+                    pass
             
-            # Check if this is a Gmail account
-            provider = EmailProviders.detect_provider(self.account_data['email'])
-            if provider == Provider.GMAIL:
-                logger.logger.debug("Gmail account detected, using OAuth")
-                return self._connect_gmail_imap()
-            
-            # Standard password authentication
-            if self.account_data['imap_ssl']:
+            # Create new connection
+            if self.account_data.get('imap_ssl', True):
                 self.imap_connection = imaplib.IMAP4_SSL(
                     self.account_data['imap_server'],
-                    self.account_data['imap_port']
+                    self.account_data.get('imap_port', 993)
                 )
             else:
                 self.imap_connection = imaplib.IMAP4(
                     self.account_data['imap_server'],
-                    self.account_data['imap_port']
+                    self.account_data.get('imap_port', 143)
                 )
             
-            self.imap_connection.login(
-                self.account_data['email'],
-                self.account_data['password']
-            )
-            logger.logger.debug("IMAP connection successful")
-            return True
+            # Handle OAuth authentication
+            if EmailProviders.is_oauth_provider(self.provider):
+                return self._connect_oauth_imap()
+            
+            # Handle password authentication
+            return self._connect_password_imap()
             
         except Exception as e:
             logger.logger.error(f"IMAP connection error: {str(e)}")
             return False
     
-    def _connect_gmail_imap(self):
+    def _connect_oauth_imap(self):
         """
-        Establish IMAP connection for Gmail using OAuth2.
+        Authenticate IMAP connection using OAuth.
         
         Returns:
-            bool: True if connection successful, False otherwise
+            bool: True if authentication successful
         """
         try:
-            logger.logger.debug("Attempting Gmail IMAP connection with OAuth")
-            
             # Get OAuth tokens
-            tokens = self.credential_manager.get_oauth_tokens(self.account_data['email'])
-            if not tokens:
+            tokens = self.credential_service.get_account_credentials(self.account_data['email'])
+            if not tokens or 'access_token' not in tokens:
                 logger.logger.error("No OAuth tokens found")
                 return False
             
-            # Check if we need to refresh the token
-            if 'access_token' not in tokens:
-                logger.logger.error("No access token in OAuth tokens")
-                return False
+            # Check if token needs refresh
+            if self.credential_service.needs_token_refresh(self.account_data['email']):
+                logger.logger.info("OAuth token expired, attempting refresh")
+                try:
+                    if 'refresh_token' in tokens:
+                        tokens = EmailProviders.refresh_oauth_token(
+                            self.account_data['email'],
+                            tokens['refresh_token'],
+                            self.provider
+                        )
+                except Exception as refresh_error:
+                    logger.logger.error(f"Token refresh failed: {str(refresh_error)}")
+                    return False
             
-            # Connect with OAuth
-            self.imap_connection = imaplib.IMAP4_SSL(
-                self.account_data['imap_server'],
-                self.account_data['imap_port']
-            )
-            
-            # Authenticate with OAuth2
+            # Authenticate with OAuth
             auth_string = f'user={self.account_data["email"]}\1auth=Bearer {tokens["access_token"]}\1\1'
             self.imap_connection.authenticate('XOAUTH2', lambda x: auth_string)
-            
-            logger.logger.debug("Gmail IMAP connection successful")
+            logger.logger.info(f"OAuth IMAP authentication successful for {self.account_data['email']}")
             return True
             
         except imaplib.IMAP4.error as e:
-            if 'Invalid credentials' in str(e):
-                logger.logger.warning("OAuth token expired, attempting refresh")
-                try:
-                    # Refresh token
-                    if 'refresh_token' in tokens:
-                        new_tokens = EmailProviders.refresh_gmail_token(
-                            self.account_data['email'],
-                            tokens['refresh_token']
-                        )
-                        if new_tokens:
-                            # Try connection again with new token
-                            auth_string = f'user={self.account_data["email"]}\1auth=Bearer {new_tokens["access_token"]}\1\1'
-                            self.imap_connection.authenticate('XOAUTH2', lambda x: auth_string)
-                            logger.logger.debug("Gmail IMAP connection successful after token refresh")
-                            return True
-                except Exception as refresh_error:
-                    logger.logger.error(f"Token refresh failed: {str(refresh_error)}")
-            
-            logger.logger.error(f"Gmail IMAP connection error: {str(e)}")
+            logger.logger.error(f"IMAP OAuth authentication error: {str(e)}")
             return False
-            
         except Exception as e:
-            logger.logger.error(f"Gmail IMAP connection error: {str(e)}")
+            logger.logger.error(f"IMAP OAuth connection error: {str(e)}")
+            return False
+    
+    def _connect_password_imap(self):
+        """
+        Authenticate IMAP connection using password.
+        
+        Returns:
+            bool: True if authentication successful
+        """
+        try:
+            # Get password
+            credentials = self.credential_service.get_account_credentials(self.account_data['email'])
+            if not credentials or 'password' not in credentials:
+                logger.logger.error("No password found")
+                return False
+            
+            # Login with password
+            self.imap_connection.login(
+                self.account_data['email'],
+                credentials['password']
+            )
+            logger.logger.info(f"Password IMAP authentication successful for {self.account_data['email']}")
+            return True
+            
+        except imaplib.IMAP4.error as e:
+            logger.logger.error(f"IMAP password authentication error: {str(e)}")
+            return False
+        except Exception as e:
+            logger.logger.error(f"IMAP password connection error: {str(e)}")
             return False
     
     def connect_smtp(self):
@@ -148,26 +162,131 @@ class EmailManager:
             bool: True if connection successful, False otherwise
         """
         try:
-            if self.account_data['smtp_ssl']:
-                self.smtp_connection = smtplib.SMTP_SSL(
+            # Close existing connection if any
+            if self.smtp_connection:
+                try:
+                    self.smtp_connection.quit()
+                except:
+                    pass
+            
+            # Create new connection
+            if self.account_data.get('smtp_ssl', True):
+                self.smtp_connection = smtplib.SMTP(
                     self.account_data['smtp_server'],
-                    self.account_data['smtp_port']
+                    self.account_data.get('smtp_port', 587)
                 )
+                self.smtp_connection.starttls()
             else:
                 self.smtp_connection = smtplib.SMTP(
                     self.account_data['smtp_server'],
-                    self.account_data['smtp_port']
+                    self.account_data.get('smtp_port', 25)
                 )
-                self.smtp_connection.starttls()
             
+            # Handle OAuth authentication
+            if EmailProviders.is_oauth_provider(self.provider):
+                return self._connect_oauth_smtp()
+            
+            # Handle password authentication
+            return self._connect_password_smtp()
+            
+        except Exception as e:
+            logger.logger.error(f"SMTP connection error: {str(e)}")
+            return False
+    
+    def _connect_oauth_smtp(self):
+        """
+        Authenticate SMTP connection using OAuth.
+        
+        Returns:
+            bool: True if authentication successful
+        """
+        try:
+            # Get OAuth tokens
+            tokens = self.credential_service.get_account_credentials(self.account_data['email'])
+            if not tokens or 'access_token' not in tokens:
+                logger.logger.error("No OAuth tokens found")
+                return False
+            
+            # Check if token needs refresh
+            if self.credential_service.needs_token_refresh(self.account_data['email']):
+                logger.logger.info("OAuth token expired, attempting refresh")
+                try:
+                    if 'refresh_token' in tokens:
+                        tokens = EmailProviders.refresh_oauth_token(
+                            self.account_data['email'],
+                            tokens['refresh_token'],
+                            self.provider
+                        )
+                except Exception as refresh_error:
+                    logger.logger.error(f"Token refresh failed: {str(refresh_error)}")
+                    return False
+            
+            # Authenticate with OAuth
+            auth_string = f'user={self.account_data["email"]}\1auth=Bearer {tokens["access_token"]}\1\1'
+            self.smtp_connection.auth('XOAUTH2', lambda x: auth_string)
+            logger.logger.info(f"OAuth SMTP authentication successful for {self.account_data['email']}")
+            return True
+            
+        except smtplib.SMTPAuthenticationError as e:
+            logger.logger.error(f"SMTP OAuth authentication error: {str(e)}")
+            return False
+        except Exception as e:
+            logger.logger.error(f"SMTP OAuth connection error: {str(e)}")
+            return False
+    
+    def _connect_password_smtp(self):
+        """
+        Authenticate SMTP connection using password.
+        
+        Returns:
+            bool: True if authentication successful
+        """
+        try:
+            # Get password
+            credentials = self.credential_service.get_account_credentials(self.account_data['email'])
+            if not credentials or 'password' not in credentials:
+                logger.logger.error("No password found")
+                return False
+            
+            # Login with password
             self.smtp_connection.login(
                 self.account_data['email'],
-                self.account_data['password']
+                credentials['password']
             )
+            logger.logger.info(f"Password SMTP authentication successful for {self.account_data['email']}")
             return True
-        except Exception as e:
-            print(f"SMTP connection error: {str(e)}")
+            
+        except smtplib.SMTPAuthenticationError as e:
+            logger.logger.error(f"SMTP password authentication error: {str(e)}")
             return False
+        except Exception as e:
+            logger.logger.error(f"SMTP password connection error: {str(e)}")
+            return False
+    
+    def disconnect(self):
+        """Close all connections."""
+        try:
+            if self.imap_connection:
+                try:
+                    self.imap_connection.close()
+                    self.imap_connection.logout()
+                except:
+                    pass
+                self.imap_connection = None
+            
+            if self.smtp_connection:
+                try:
+                    self.smtp_connection.quit()
+                except:
+                    pass
+                self.smtp_connection = None
+                
+        except Exception as e:
+            logger.logger.error(f"Error disconnecting: {str(e)}")
+    
+    def __del__(self):
+        """Ensure connections are closed on deletion."""
+        self.disconnect()
     
     def list_folders(self):
         """

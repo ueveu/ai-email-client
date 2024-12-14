@@ -3,21 +3,26 @@ Main application window integrating all UI components.
 """
 
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QSystemTrayIcon,
-                           QMenu, QMenuBar, QToolBar, QDockWidget, QApplication)
-from PyQt6.QtCore import Qt, QSize
+                           QMenu, QMenuBar, QToolBar, QDockWidget, QApplication, QDialog, QDialogButtonBox, QMessageBox)
+from PyQt6.QtCore import Qt, QSize, QSettings
 from PyQt6.QtGui import QIcon, QAction
 import qtawesome as qta
+import threading
 
-from services.notification_service import NotificationService
+from services.notification_service import NotificationService, NotificationType
 from services.email_operation_service import EmailOperationService
 from services.shortcut_service import ShortcutService
 from services.theme_service import ThemeService
 from services.ai_service import AIService
 from services.credential_service import CredentialService
+from account_manager import AccountManager
+from email_manager import EmailManager
+from email_providers import EmailProviders, Provider
 
 from .status_bar_widget import StatusBarWidget
 from .settings_dialog import SettingsDialog
 from utils.logger import logger
+from .loading_spinner import LoadingSpinner
 
 class MainWindow(QMainWindow):
     """Main application window."""
@@ -33,6 +38,13 @@ class MainWindow(QMainWindow):
         self.ai_service = AIService()
         self.credential_service = CredentialService()
         
+        # Initialize email management
+        self.account_manager = AccountManager()
+        self.email_manager = None  # Will be set when account is selected
+        
+        # Add loading indicators
+        self.loading_indicator = LoadingSpinner()
+        
         # Set up UI
         self.setup_ui()
         self.setup_system_tray()
@@ -40,6 +52,9 @@ class MainWindow(QMainWindow):
         
         # Apply theme
         self.theme_service.apply_theme(self.theme_service.get_current_theme())
+        
+        # Load accounts and connect if auto-connect is enabled
+        self.load_accounts()
     
     def setup_ui(self):
         """Set up the main window UI."""
@@ -74,21 +89,32 @@ class MainWindow(QMainWindow):
         # File menu
         file_menu = menubar.addMenu("&File")
         
-        new_email = QAction(qta.icon("fa.envelope-o"), "New Email", self)
-        new_email.setShortcut(self.shortcut_service.get_shortcut('email_compose'))
-        file_menu.addAction(new_email)
+        # Account management actions
+        add_account_action = QAction("Add Email Account...", self)
+        add_account_action.setStatusTip("Add a new email account")
+        add_account_action.triggered.connect(self.show_add_account_dialog)
+        file_menu.addAction(add_account_action)
         
-        settings = QAction(qta.icon("fa.cog"), "Settings", self)
-        settings.setShortcut(self.shortcut_service.get_shortcut('app_settings'))
-        settings.triggered.connect(self.show_settings)
-        file_menu.addAction(settings)
+        manage_accounts_action = QAction("Manage Accounts...", self)
+        manage_accounts_action.setStatusTip("Manage email accounts")
+        manage_accounts_action.triggered.connect(self.show_manage_accounts_dialog)
+        file_menu.addAction(manage_accounts_action)
         
         file_menu.addSeparator()
         
-        quit_action = QAction(qta.icon("fa.power-off"), "Quit", self)
-        quit_action.setShortcut(self.shortcut_service.get_shortcut('app_quit'))
-        quit_action.triggered.connect(QApplication.quit)
-        file_menu.addAction(quit_action)
+        # Settings action
+        settings_action = QAction("Settings...", self)
+        settings_action.setStatusTip("Configure application settings")
+        settings_action.triggered.connect(self.show_settings_dialog)
+        file_menu.addAction(settings_action)
+        
+        file_menu.addSeparator()
+        
+        # Exit action
+        exit_action = QAction("Exit", self)
+        exit_action.setStatusTip("Exit application")
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
         
         # View menu
         view_menu = menubar.addMenu("&View")
@@ -116,9 +142,10 @@ class MainWindow(QMainWindow):
         # Help menu
         help_menu = menubar.addMenu("&Help")
         
-        help_action = QAction(qta.icon("fa.question-circle"), "Help", self)
-        help_action.setShortcut(self.shortcut_service.get_shortcut('app_help'))
-        help_menu.addAction(help_action)
+        about_action = QAction("About", self)
+        about_action.setStatusTip("Show about dialog")
+        about_action.triggered.connect(self.show_about_dialog)
+        help_menu.addAction(about_action)
     
     def create_tool_bar(self):
         """Create the main toolbar."""
@@ -191,10 +218,24 @@ class MainWindow(QMainWindow):
         elif action == 'toggle_status_bar':
             self.status_bar.setVisible(not self.status_bar.isVisible())
     
-    def show_settings(self):
-        """Show the settings dialog."""
+    def show_settings_dialog(self):
+        """Show application settings dialog."""
+        from .settings_dialog import SettingsDialog
         dialog = SettingsDialog(self)
-        dialog.exec()
+        if dialog.exec():
+            # Reload settings if dialog was accepted
+            self.load_settings()
+    
+    def show_about_dialog(self):
+        """Show about dialog."""
+        QMessageBox.about(
+            self,
+            "About AI Email Assistant",
+            "AI Email Assistant\n\n"
+            "A modern email client with AI-powered features\n"
+            "Version 1.0.0\n\n"
+            "© 2024 Your Company"
+        )
     
     def closeEvent(self, event):
         """Handle window close event."""
@@ -216,3 +257,179 @@ class MainWindow(QMainWindow):
         
         # Start a test operation
         self.operation_service.sync_folder("INBOX") 
+    
+    def handle_error(self, error_type: str, error_message: str):
+        """
+        Handle errors from the error handler.
+        
+        Args:
+            error_type (str): Type of error
+            error_message (str): Error message
+        """
+        # Show error in status bar
+        self.status_bar.showMessage(f"Error: {error_message}", 5000)  # Show for 5 seconds
+        
+        # Also show notification
+        self.notification_service.show_notification(
+            "Error",
+            f"{error_type}: {error_message}",
+            level="error"
+        )
+        
+        # Log the error
+        logger.error(f"Error handled by MainWindow: {error_type} - {error_message}")
+    
+    def authenticate_account(self, email: str) -> bool:
+        """
+        Authenticate an email account.
+        
+        Args:
+            email (str): Email address to authenticate
+            
+        Returns:
+            bool: True if authentication successful
+        """
+        try:
+            # Get account data
+            account_data = self.account_manager.get_account(email)
+            if not account_data:
+                self.notification_service.show_notification(
+                    "Authentication Error",
+                    f"Account {email} not found",
+                    NotificationType.ERROR
+                )
+                return False
+            
+            # Check provider type
+            provider = EmailProviders.detect_provider(email)
+            
+            # Handle Gmail OAuth
+            if provider == Provider.GMAIL:
+                # Check for existing OAuth tokens
+                tokens = self.credential_service.get_oauth_tokens(email)
+                if not tokens:
+                    # Show authentication dialog
+                    from .email_account_dialog import EmailAccountDialog
+                    dialog = EmailAccountDialog(self)
+                    dialog.email_input.setText(email)
+                    dialog.quick_setup(Provider.GMAIL)
+                    if not dialog.exec():
+                        return False
+                    
+                    # Get fresh tokens
+                    tokens = self.credential_service.get_oauth_tokens(email)
+                    if not tokens:
+                        return False
+                    
+                    # Update account data with new tokens
+                    account_data['oauth_tokens'] = tokens
+            else:
+                # Check for password
+                credentials = self.credential_service.get_email_credentials(email)
+                if not credentials or 'password' not in credentials:
+                    # Show authentication dialog
+                    from .email_account_dialog import EmailAccountDialog
+                    dialog = EmailAccountDialog(self)
+                    dialog.email_input.setText(email)
+                    if not dialog.exec():
+                        return False
+                    
+                    # Get fresh credentials
+                    credentials = self.credential_service.get_email_credentials(email)
+                    if not credentials:
+                        return False
+                    
+                    # Update account data with password
+                    account_data['password'] = credentials['password']
+            
+            # Create email manager with authenticated account
+            self.email_manager = EmailManager(account_data)
+            
+            # Test connection
+            if not self.email_manager.connect_imap():
+                raise ConnectionError("Failed to connect to IMAP server")
+            if not self.email_manager.connect_smtp():
+                raise ConnectionError("Failed to connect to SMTP server")
+            
+            # Update UI
+            self.setWindowTitle(f"AI Email Assistant - {email}")
+            self.notification_service.show_notification(
+                "Connected",
+                f"Successfully connected to {email}",
+                NotificationType.SUCCESS
+            )
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Authentication error for {email}: {str(e)}")
+            self.notification_service.show_notification(
+                "Authentication Error",
+                f"Failed to authenticate {email}: {str(e)}",
+                NotificationType.ERROR
+            )
+            return False
+    
+    def load_accounts(self):
+        """Load email accounts and connect if auto-connect is enabled."""
+        try:
+            settings = QSettings('AI Email Assistant', 'Settings')
+            auto_connect = settings.value('general/auto_connect', True, bool)
+            
+            # Get all accounts
+            accounts = self.account_manager.get_all_accounts()
+            if not accounts:
+                # Show welcome message if no accounts
+                self.notification_service.show_notification(
+                    "Welcome",
+                    "Add an email account to get started",
+                    duration=None  # Persistent until dismissed
+                )
+                return
+            
+            if auto_connect:
+                # Connect to the first account
+                first_account = accounts[0]
+                self.authenticate_account(first_account['email'])
+        
+        except Exception as e:
+            logger.error(f"Error loading accounts: {str(e)}")
+            self.notification_service.show_notification(
+                "Error",
+                f"Failed to load email accounts: {str(e)}",
+                NotificationType.ERROR
+            )
+    
+    def show_add_account_dialog(self):
+        """Show dialog to add a new email account."""
+        from .email_account_dialog import EmailAccountDialog
+        dialog = EmailAccountDialog(self)
+        if dialog.exec():
+            # Refresh accounts and authenticate new account
+            self.load_accounts()
+            if dialog.account_data:
+                self.authenticate_account(dialog.account_data['email'])
+    
+    def show_manage_accounts_dialog(self):
+        """Show dialog to manage email accounts."""
+        from .email_accounts_tab import EmailAccountsTab
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Manage Email Accounts")
+        dialog.setMinimumWidth(600)
+        dialog.setMinimumHeight(400)
+        
+        layout = QVBoxLayout(dialog)
+        accounts_tab = EmailAccountsTab(dialog)
+        layout.addWidget(accounts_tab)
+        
+        # Add close button
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        
+        dialog.exec()
+    
+    def refresh_accounts(self):
+        # Move to background thread
+        self.loading_indicator.start()
+        threading.Thread(target=self._async_refresh).start()
