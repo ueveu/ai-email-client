@@ -10,6 +10,7 @@ from security.credential_manager import CredentialManager
 from email_providers import EmailProviders, Provider
 from utils.error_handler import handle_errors
 from utils.logger import logger
+import socket
 
 class ConnectionTester(QThread):
     """
@@ -33,11 +34,23 @@ class ConnectionTester(QThread):
             self.finished.emit(False, self.server_type, str(e))
     
     def _test_imap(self):
+        """Test IMAP connection with detailed error handling and status reporting."""
         try:
+            # Create progress steps
+            self.finished.emit(False, "IMAP", "Connecting to server...")
+            
+            # Set timeout for operations
+            socket.setdefaulttimeout(30)  # 30 seconds timeout
+            
             if self.settings['imap_ssl']:
+                # Create SSL context with modern security settings
+                context = ssl.create_default_context()
+                context.options |= ssl.OP_NO_SSLv2 | ssl.OP_NO_SSLv3
+                
                 server = imaplib.IMAP4_SSL(
                     self.settings['imap_server'],
-                    self.settings['imap_port']
+                    self.settings['imap_port'],
+                    ssl_context=context
                 )
             else:
                 server = imaplib.IMAP4(
@@ -45,13 +58,51 @@ class ConnectionTester(QThread):
                     self.settings['imap_port']
                 )
             
-            server.login(self.settings['email'], self.settings['password'])
-            server.select()  # Select INBOX to verify full connection
-            server.logout()
+            self.finished.emit(False, "IMAP", "Authenticating...")
             
-            self.finished.emit(True, "IMAP", "IMAP connection successful")
+            try:
+                server.login(self.settings['email'], self.settings['password'])
+            except imaplib.IMAP4.error as e:
+                if "AUTHENTICATIONFAILED" in str(e):
+                    raise Exception("Authentication failed. Please check your email and password.")
+                elif "INVALID" in str(e):
+                    raise Exception("Invalid credentials. Please verify your login details.")
+                else:
+                    raise
+            
+            self.finished.emit(False, "IMAP", "Checking mailbox access...")
+            
+            # Test mailbox access
+            try:
+                server.select('INBOX')
+            except imaplib.IMAP4.error:
+                raise Exception("Could not access INBOX. Please check mailbox permissions.")
+            
+            # Test basic operations
+            try:
+                # List folders to verify permissions
+                server.list()
+                # Check INBOX status
+                server.status('INBOX', '(MESSAGES)')
+            except imaplib.IMAP4.error:
+                raise Exception("Limited mailbox access. Please check account permissions.")
+            
+            server.logout()
+            self.finished.emit(True, "IMAP", "IMAP connection successful! All tests passed.")
+            
+        except socket.gaierror:
+            self.finished.emit(False, "IMAP", "Could not resolve server address. Please check server settings.")
+        except socket.timeout:
+            self.finished.emit(False, "IMAP", "Connection timed out. Please check your internet connection and server settings.")
+        except ssl.SSLError as e:
+            self.finished.emit(False, "IMAP", f"SSL/TLS error: {str(e)}. Please check your security settings.")
+        except ConnectionRefusedError:
+            self.finished.emit(False, "IMAP", "Connection refused. Please verify server and port settings.")
         except Exception as e:
             self.finished.emit(False, "IMAP", str(e))
+        finally:
+            # Reset timeout to default
+            socket.setdefaulttimeout(None)
     
     def _test_smtp(self):
         try:
@@ -369,7 +420,7 @@ class EmailAccountDialog(QDialog):
     
     @handle_errors
     def test_connection(self, server_type):
-        """Test connection to email server."""
+        """Test connection to email server with detailed progress feedback."""
         settings = self.get_account_data()
         
         # Validate required fields
@@ -395,24 +446,73 @@ class EmailAccountDialog(QDialog):
         # Store the tester reference
         if server_type == "IMAP":
             self.imap_tester = tester
+            self.test_imap_btn.setEnabled(False)
         else:
             self.smtp_tester = tester
+            self.test_smtp_btn.setEnabled(False)
         
-        # Show progress dialog
-        progress = QProgressDialog(
-            f"Testing {server_type} connection...",
+        # Show progress dialog with detailed status
+        self.progress = QProgressDialog(
+            f"Initializing {server_type} test...",
             "Cancel",
             0,
             0,
             self
         )
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setAutoClose(True)
-        progress.canceled.connect(tester.terminate)
-        progress.show()
+        self.progress.setWindowTitle(f"Testing {server_type} Connection")
+        self.progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self.progress.setAutoClose(True)
+        self.progress.setMinimumDuration(0)
+        self.progress.canceled.connect(self.cancel_test)
+        self.progress.show()
         
         # Start the test
         tester.start()
+    
+    def cancel_test(self):
+        """Cancel ongoing connection test."""
+        if self.imap_tester and self.imap_tester.isRunning():
+            self.imap_tester.terminate()
+            self.imap_tester = None
+            self.test_imap_btn.setEnabled(True)
+        
+        if self.smtp_tester and self.smtp_tester.isRunning():
+            self.smtp_tester.terminate()
+            self.smtp_tester = None
+            self.test_smtp_btn.setEnabled(True)
+    
+    def handle_test_result(self, success, server_type, message):
+        """Handle the connection test result with detailed feedback."""
+        # Update progress dialog
+        if self.progress and self.progress.isVisible():
+            self.progress.setLabelText(message)
+            
+            if success or "failed" in message.lower() or "error" in message.lower():
+                self.progress.cancel()
+        
+        # Re-enable test buttons
+        if server_type == "IMAP":
+            self.test_imap_btn.setEnabled(True)
+            self.imap_tester = None
+        else:
+            self.test_smtp_btn.setEnabled(True)
+            self.smtp_tester = None
+        
+        # Show result
+        if success:
+            QMessageBox.information(
+                self,
+                f"{server_type} Test Successful",
+                message,
+                QMessageBox.StandardButton.Ok
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                f"{server_type} Test Failed",
+                message,
+                QMessageBox.StandardButton.Ok
+            )
     
     @handle_errors
     def test_all_connections(self, *args):
