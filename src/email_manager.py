@@ -277,7 +277,54 @@ class EmailManager:
             print(f"Error getting folder status: {str(e)}")
             return None
     
-    def fetch_emails(self, folder=None, limit=50, offset=0, use_cache=True, thread=True):
+    @handle_errors
+    def sync_folders(self, error_collection=None) -> bool:
+        """
+        Synchronize folders with the server.
+        
+        Args:
+            error_collection (ErrorCollection, optional): Collection to store multiple errors
+            
+        Returns:
+            bool: True if sync was successful, False otherwise
+        """
+        logger.logger.debug("Starting folder synchronization")
+        
+        if not self.imap_connection:
+            if not self.connect_imap():
+                error_collection.add("Failed to connect to IMAP server")
+                return False
+        
+        try:
+            # List all folders
+            @collect_errors(error_collection, "List Folders")
+            def list_all_folders():
+                return self.list_folders()
+            folders = list_all_folders()
+            
+            if not folders:
+                return False
+            
+            # Get status for each folder
+            for folder in folders:
+                @collect_errors(error_collection, f"Get Status: {folder['name']}")
+                def get_folder_status():
+                    status = self.get_folder_status(folder['name'])
+                    if status:
+                        folder['status'] = status
+                get_folder_status()
+            
+            logger.logger.debug(f"Synchronized {len(folders)} folders")
+            return True
+            
+        except Exception as e:
+            if error_collection:
+                error_collection.add(f"Error synchronizing folders: {str(e)}")
+            logger.logger.error(f"Error synchronizing folders: {str(e)}")
+            return False
+    
+    @handle_errors
+    def fetch_emails(self, folder=None, limit=50, offset=0, use_cache=True, thread=True, error_collection=None):
         """
         Fetch emails from the specified folder.
         
@@ -287,74 +334,95 @@ class EmailManager:
             offset (int): Number of emails to skip from the start
             use_cache (bool): Whether to use cached emails when offline
             thread (bool): Whether to group emails into conversation threads
-        
+            error_collection (ErrorCollection, optional): Collection to store multiple errors
+            
         Returns:
             list: List of email data dictionaries or EmailThread objects
         """
         logger.logger.debug(f"Fetching emails from folder: {folder}, limit: {limit}, offset: {offset}, use_cache: {use_cache}, thread: {thread}")
         
         # Fetch emails as before
-        emails = self._fetch_emails_base(folder, limit, offset, use_cache)
+        @collect_errors(error_collection, "Fetch Base Emails")
+        def fetch_base():
+            return self._fetch_emails_base(folder, limit, offset, use_cache, error_collection)
+        emails = fetch_base()
+        
+        if not emails:
+            return []
+            
         logger.logger.debug(f"Fetched {len(emails)} base emails")
         
         # Return threaded or unthreaded emails based on parameter
         if thread:
             logger.logger.debug("Threading emails")
-            self.thread_manager.process_emails(emails)
-            threads = self.thread_manager.threads
-            logger.logger.debug(f"Created {len(threads)} email threads")
-            return threads
+            @collect_errors(error_collection, "Process Email Threading")
+            def process_threading():
+                self.thread_manager.process_emails(emails)
+                return self.thread_manager.threads
+            threads = process_threading()
+            logger.logger.debug(f"Created {len(threads) if threads else 0} email threads")
+            return threads or []
         return emails
     
-    def _fetch_emails_base(self, folder=None, limit=50, offset=0, use_cache=True):
+    def _fetch_emails_base(self, folder=None, limit=50, offset=0, use_cache=True, error_collection=None):
         """Base method for fetching emails without threading."""
         logger.logger.debug(f"Base fetch - folder: {folder}, current folder: {self.current_folder}")
         
         if folder and folder != self.current_folder:
-            logger.logger.debug(f"Selecting new folder: {folder}")
-            if not self.select_folder(folder):
-                logger.logger.error(f"Failed to select folder: {folder}")
+            @collect_errors(error_collection, f"Select Folder: {folder}")
+            def select_new_folder():
+                return self.select_folder(folder)
+            if not select_new_folder():
                 return []
         elif not self.current_folder:
-            logger.logger.debug("No current folder, selecting INBOX")
-            if not self.select_folder('INBOX'):
-                logger.logger.error("Failed to select INBOX")
+            @collect_errors(error_collection, "Select INBOX")
+            def select_inbox():
+                return self.select_folder('INBOX')
+            if not select_inbox():
                 return []
         
         try:
             if not self.imap_connection and use_cache:
                 # Return cached emails if offline
                 logger.logger.info(f"Using cached emails for {folder}")
-                cached_emails = self.cache.get_cached_emails(
-                    self.account_data['email'],
-                    folder,
-                    limit,
-                    offset
-                )
-                logger.logger.debug(f"Retrieved {len(cached_emails)} cached emails")
-                return cached_emails
+                @collect_errors(error_collection, "Get Cached Emails")
+                def get_cached():
+                    return self.cache.get_cached_emails(
+                        self.account_data['email'],
+                        folder,
+                        limit,
+                        offset
+                    )
+                cached_emails = get_cached()
+                logger.logger.debug(f"Retrieved {len(cached_emails) if cached_emails else 0} cached emails")
+                return cached_emails or []
             
             if not self.imap_connection:
-                logger.logger.debug("No IMAP connection, attempting to connect")
-                if not self.connect_imap():
-                    logger.logger.error("Failed to establish IMAP connection")
+                @collect_errors(error_collection, "Connect IMAP")
+                def connect():
+                    return self.connect_imap()
+                if not connect():
                     return []
             
-            logger.logger.debug("Searching for messages")
-            _, messages = self.imap_connection.search(None, "ALL")
-            email_list = []
+            @collect_errors(error_collection, "Search Messages")
+            def search_messages():
+                _, messages = self.imap_connection.search(None, "ALL")
+                return messages[0].split()
+            message_numbers = search_messages()
             
-            # Get message numbers and apply offset and limit
-            message_numbers = messages[0].split()
+            if not message_numbers:
+                return []
+                
             message_numbers.reverse()  # Reverse to get newest first
             start_index = offset
             end_index = min(offset + limit, len(message_numbers))
             
             logger.logger.debug(f"Processing messages {start_index} to {end_index} of {len(message_numbers)}")
             
+            email_list = []
             for num in message_numbers[start_index:end_index]:
-                try:
-                    logger.logger.debug(f"Fetching message {num}")
+                @collect_errors(error_collection, f"Fetch Message {num}")
+                def fetch_message():
                     _, msg_data = self.imap_connection.fetch(num, "(RFC822)")
                     email_message = email.message_from_bytes(msg_data[0][1])
                     
@@ -371,27 +439,29 @@ class EmailManager:
                         )
                     
                     email_list.append(email_data)
-                    logger.logger.debug(f"Successfully processed message {num}")
-                except Exception as e:
-                    logger.logger.error(f"Error processing message {num}: {str(e)}")
-                    continue
+                fetch_message()
             
             logger.logger.debug(f"Successfully fetched {len(email_list)} emails")
             return email_list
             
         except Exception as e:
+            if error_collection:
+                error_collection.add(f"Error in _fetch_emails_base: {str(e)}")
             logger.logger.error(f"Error in _fetch_emails_base: {str(e)}")
             if use_cache:
                 # Try to get cached emails on error
                 logger.logger.info("Attempting to retrieve cached emails after error")
-                cached_emails = self.cache.get_cached_emails(
-                    self.account_data['email'],
-                    folder,
-                    limit,
-                    offset
-                )
-                logger.logger.debug(f"Retrieved {len(cached_emails)} cached emails after error")
-                return cached_emails
+                @collect_errors(error_collection, "Get Cached Emails After Error")
+                def get_cached_after_error():
+                    return self.cache.get_cached_emails(
+                        self.account_data['email'],
+                        folder,
+                        limit,
+                        offset
+                    )
+                cached_emails = get_cached_after_error()
+                logger.logger.debug(f"Retrieved {len(cached_emails) if cached_emails else 0} cached emails after error")
+                return cached_emails or []
             return []
     
     def _parse_email_message(self, email_message, message_id):
@@ -490,7 +560,8 @@ class EmailManager:
         """Clear all cached data."""
         self.cache.clear_cache()
     
-    def send_email(self, to_addr, subject, body, cc=None, bcc=None, attachments=None):
+    @handle_errors
+    def send_email(self, to_addr, subject, body, cc=None, bcc=None, attachments=None, error_collection=None):
         """
         Send an email using the configured SMTP settings.
         
@@ -501,31 +572,43 @@ class EmailManager:
             cc (str, optional): CC recipients (comma-separated)
             bcc (str, optional): BCC recipients (comma-separated)
             attachments (list, optional): List of attachment file paths
-        
+            error_collection (ErrorCollection, optional): Collection to store multiple errors
+            
         Returns:
             bool: True if sent successfully, False otherwise
         """
         if not self.smtp_connection:
-            if not self.connect_smtp():
+            @collect_errors(error_collection, "Connect SMTP")
+            def connect():
+                return self.connect_smtp()
+            if not connect():
                 return False
         
         try:
-            msg = MIMEMultipart()
-            msg["From"] = self.account_data["email"]
-            msg["To"] = to_addr
-            msg["Subject"] = subject
+            @collect_errors(error_collection, "Prepare Email Message")
+            def prepare_message():
+                msg = MIMEMultipart()
+                msg["From"] = self.account_data["email"]
+                msg["To"] = to_addr
+                msg["Subject"] = subject
+                
+                if cc:
+                    msg["Cc"] = cc
+                if bcc:
+                    msg["Bcc"] = bcc
+                
+                msg.attach(MIMEText(body, "plain"))
+                return msg
             
-            if cc:
-                msg["Cc"] = cc
-            if bcc:
-                msg["Bcc"] = bcc
-            
-            msg.attach(MIMEText(body, "plain"))
+            msg = prepare_message()
+            if not msg:
+                return False
             
             # Add attachments if any
             if attachments:
                 for filepath in attachments:
-                    try:
+                    @collect_errors(error_collection, f"Add Attachment: {filepath}")
+                    def add_attachment():
                         with open(filepath, 'rb') as f:
                             part = MIMEBase('application', 'octet-stream')
                             part.set_payload(f.read())
@@ -546,9 +629,7 @@ class EmailManager:
                             part.set_type(content_type)
                         
                         msg.attach(part)
-                    except Exception as e:
-                        logger.error(f"Error attaching file {filepath}: {str(e)}")
-                        continue
+                    add_attachment()
             
             # Build recipient list
             recipients = []
@@ -559,11 +640,16 @@ class EmailManager:
                 recipients.extend(addr.strip() for addr in bcc.split(','))
             
             # Send the email
-            self.smtp_connection.send_message(msg, to_addrs=recipients)
-            return True
+            @collect_errors(error_collection, "Send Message")
+            def send():
+                self.smtp_connection.send_message(msg, to_addrs=recipients)
+                return True
+            return send() or False
             
         except Exception as e:
-            logger.error(f"Error sending email: {str(e)}")
+            if error_collection:
+                error_collection.add(f"Error sending email: {str(e)}")
+            logger.logger.error(f"Error sending email: {str(e)}")
             return False
     
     def close_connections(self):
@@ -859,110 +945,6 @@ class EmailManager:
         """
         return self.mark_email(message_id, '\\Flagged', False)
     
-    def sync_folders(self) -> bool:
-        """
-        Synchronize folders with the server.
-        
-        Returns:
-            bool: True if sync was successful, False otherwise
-        """
-        logger.logger.debug("Starting folder synchronization")
-        
-        if not self.imap_connection:
-            if not self.connect_imap():
-                logger.logger.error("Failed to connect to IMAP server")
-                return False
-        
-        try:
-            # List all folders
-            folders = self.list_folders()
-            
-            # Get status for each folder
-            for folder in folders:
-                status = self.get_folder_status(folder['name'])
-                if status:
-                    folder['status'] = status
-            
-            logger.logger.debug(f"Synchronized {len(folders)} folders")
-            return True
-            
-        except Exception as e:
-            logger.logger.error(f"Error synchronizing folders: {str(e)}")
-            return False
-    
-    def get_folder_hierarchy(self) -> dict:
-        """
-        Get folder hierarchy with status information.
-        
-        Returns:
-            dict: Folder hierarchy with status information
-        """
-        folders = self.list_folders()
-        hierarchy = {}
-        
-        for folder in folders:
-            path_parts = folder['name'].split('/')
-            current = hierarchy
-            
-            for i, part in enumerate(path_parts):
-                if i == len(path_parts) - 1:
-                    # Leaf folder - add with status
-                    status = self.get_folder_status(folder['name'])
-                    current[part] = {
-                        'name': folder['name'],
-                        'attributes': folder['attributes'],
-                        'status': status
-                    }
-                else:
-                    # Create intermediate path
-                    if part not in current:
-                        current[part] = {}
-                    current = current[part]
-        
-        return hierarchy
-    
-    def ensure_special_folders(self) -> bool:
-        """
-        Ensure all special folders exist.
-        
-        Returns:
-            bool: True if all special folders exist or were created
-        """
-        special_folders = ['Sent', 'Drafts', 'Trash', 'Spam', 'Archive']
-        existing_folders = {f['name'] for f in self.list_folders()}
-        
-        success = True
-        for folder in special_folders:
-            if folder not in existing_folders:
-                if not self.create_folder(folder):
-                    logger.logger.error(f"Failed to create special folder: {folder}")
-                    success = False
-        
-        return success
-    
-    @handle_errors
-    def test_all_connections(self, account_data, error_collection=None):
-        """Test both IMAP and SMTP connections with error collection."""
-        results = {'imap': False, 'smtp': False}
-        
-        @collect_errors(error_collection, "IMAP Connection")
-        def test_imap():
-            with self._create_imap_connection(account_data) as imap:
-                results['imap'] = True
-                return True
-        
-        @collect_errors(error_collection, "SMTP Connection")
-        def test_smtp():
-            with self._create_smtp_connection(account_data) as smtp:
-                results['smtp'] = True
-                return True
-        
-        test_imap()
-        test_smtp()
-        
-        return results
-    
-    @handle_errors
     def sync_emails(self, account_id, folder="INBOX", error_collection=None):
         """Synchronize emails with error collection."""
         account = self.get_account(account_id)
@@ -1002,37 +984,6 @@ class EmailManager:
         except Exception as e:
             error_collection.add(f"Failed to sync emails: {str(e)}")
             return []
-    
-    @handle_errors
-    def send_email(self, account_id, email_data, error_collection=None):
-        """Send email with error collection."""
-        account = self.get_account(account_id)
-        if not account:
-            error_collection.add(f"Account {account_id} not found")
-            return False
-        
-        try:
-            with self._create_smtp_connection(account) as smtp:
-                # Prepare email
-                @collect_errors(error_collection, "Prepare Email")
-                def prepare_email():
-                    return self._prepare_email_message(account, email_data)
-                msg = prepare_email()
-                
-                if not msg:
-                    return False
-                
-                # Send email
-                @collect_errors(error_collection, "Send Email")
-                def send():
-                    smtp.send_message(msg)
-                send()
-                
-                return True
-                
-        except Exception as e:
-            error_collection.add(f"Failed to send email: {str(e)}")
-            return False
     
     @handle_errors
     def move_email(self, account_id, message_id, target_folder, error_collection=None):

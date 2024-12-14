@@ -3,6 +3,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QListWidget, QListWidgetItem,
 from PyQt6.QtCore import pyqtSignal, Qt, QSize, QMimeData
 from PyQt6.QtGui import QIcon, QPixmap, QDrag
 from utils.logger import logger
+from .attachment_preview_dialog import AttachmentPreviewDialog
 import os
 import mimetypes
 import shutil
@@ -15,6 +16,7 @@ class AttachmentView(QWidget):
     
     attachment_downloaded = pyqtSignal(str)  # Emitted when attachment is downloaded
     attachment_removed = pyqtSignal(str)     # Emitted when attachment is removed
+    attachment_saved = pyqtSignal(str)       # Emitted when attachment is saved to disk
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -134,22 +136,16 @@ class AttachmentView(QWidget):
         self.preview_attachment(attachment)
     
     def preview_attachment(self, attachment):
-        """Preview an attachment if possible."""
-        mime_type = attachment.get('content_type', 'application/octet-stream')
-        main_type = mime_type.split('/')[0]
-        
-        # Handle different types of previews
-        if main_type == 'image':
-            # Show image preview dialog
-            pass  # TODO: Implement image preview
-        elif main_type == 'text' or mime_type == 'application/pdf':
-            # Show text/PDF preview dialog
-            pass  # TODO: Implement text/PDF preview
-        else:
-            QMessageBox.information(
+        """Preview an attachment using the AttachmentPreviewDialog."""
+        try:
+            preview_dialog = AttachmentPreviewDialog(attachment, self)
+            preview_dialog.exec()
+        except Exception as e:
+            logger.error(f"Error previewing attachment: {str(e)}")
+            QMessageBox.warning(
                 self,
-                "Preview Not Available",
-                f"Preview is not available for {mime_type} files.\nPlease download the file to view it."
+                "Preview Failed",
+                f"Failed to preview attachment:\n{str(e)}"
             )
     
     def download_attachment(self, attachment):
@@ -174,6 +170,7 @@ class AttachmentView(QWidget):
             if source_path and os.path.exists(source_path):
                 shutil.copy2(source_path, file_path)
                 self.attachment_downloaded.emit(file_path)
+                self.attachment_saved.emit(file_path)  # Emit saved signal
                 
                 QMessageBox.information(
                     self,

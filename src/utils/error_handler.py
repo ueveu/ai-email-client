@@ -44,23 +44,42 @@ class ErrorCollection:
 
 def handle_errors(func):
     """
-    Decorator that handles exceptions and collects multiple errors.
-    Use this decorator on methods that might produce multiple errors.
+    Decorator to handle errors in functions.
+    Logs errors and shows user-friendly messages.
     """
+    @wraps(func)
     def wrapper(*args, **kwargs):
-        error_collection = ErrorCollection()
         try:
-            # Pass the error collection to the function
-            return func(*args, error_collection=error_collection, **kwargs)
+            return func(*args, **kwargs)
         except Exception as e:
-            error_collection.add(str(e))
-        finally:
-            if error_collection.has_errors():
-                QMessageBox.critical(
-                    None,
-                    "Multiple Errors Occurred",
-                    f"The following errors occurred:\n\n{error_collection.format_errors()}"
-                )
+            # Get context information
+            context = {
+                'function': func.__name__,
+                'args': str(args),
+                'kwargs': str(kwargs)
+            }
+            
+            # Format traceback
+            tb_text = ''.join(traceback.format_exc())
+            
+            # Add error to handler's buffer
+            error_handler.add_error({
+                'type': type(e).__name__,
+                'message': str(e),
+                'traceback': tb_text,
+                'context': context
+            })
+            
+            # Show errors if we have accumulated some
+            if len(error_handler.error_buffer) >= 3:  # Show after 3 errors
+                error_handler.show_error_dialog()
+            
+            # Re-raise critical exceptions
+            if isinstance(e, (SystemExit, KeyboardInterrupt)):
+                raise
+            
+            return None
+    
     return wrapper
 
 def collect_errors(error_collection: ErrorCollection, operation: str):
