@@ -81,7 +81,7 @@ class AIService:
         num_suggestions: int = 3
     ) -> List[str]:
         """
-        Generate email reply suggestions.
+        Generate email reply suggestions with enhanced context awareness.
         
         Args:
             email_content: Content of the email to reply to
@@ -97,11 +97,19 @@ class AIService:
             return []
         
         try:
-            # Prepare prompt
+            # Analyze conversation history if provided
+            history_analysis = {}
+            if context and 'conversation_history' in context:
+                history = context.get('conversation_history', [])
+                if isinstance(history, list):
+                    history_analysis = self.analyze_conversation_history(history)
+            
+            # Build enhanced prompt
             prompt = self._build_reply_prompt(
                 email_content,
                 context,
-                tone
+                tone,
+                history_analysis
             )
             
             # Generate replies
@@ -122,24 +130,42 @@ class AIService:
         self,
         email_content: str,
         context: Optional[Dict] = None,
-        tone: Optional[str] = None
+        tone: Optional[str] = None,
+        history_analysis: Optional[Dict] = None
     ) -> str:
-        """Build prompt for reply generation."""
+        """Build enhanced prompt for reply generation."""
         prompt_parts = [
             "Generate a professional email reply to the following email:",
             f"\nOriginal Email:\n{email_content}\n"
         ]
         
+        # Add conversation history analysis if available
+        if history_analysis:
+            if history_analysis.get('key_points'):
+                prompt_parts.append(
+                    "\nKey Discussion Points:\n" +
+                    "\n".join(f"- {point}" for point in history_analysis['key_points'])
+                )
+            
+            if history_analysis.get('tone_patterns'):
+                prompt_parts.append(
+                    "\nConversation Tone Patterns:\n" +
+                    "\n".join(f"- {pattern}" for pattern in history_analysis['tone_patterns'])
+                )
+            
+            if history_analysis.get('suggested_approach'):
+                prompt_parts.append(
+                    f"\nSuggested Approach:\n{history_analysis['suggested_approach']}"
+                )
+        
         # Add context if provided
         if context:
+            if 'relationship' in context:
+                prompt_parts.append(f"\nRelationship: {context['relationship']}")
+            
             if 'conversation_history' in context:
                 prompt_parts.append(
-                    "\nConversation History:\n" +
-                    context['conversation_history']
-                )
-            if 'relationship' in context:
-                prompt_parts.append(
-                    f"\nRelationship: {context['relationship']}"
+                    "\nConversation History:\n" + context['conversation_history']
                 )
         
         # Add tone instruction
@@ -327,3 +353,141 @@ class AIService:
         except Exception as e:
             logger.error(f"API key test failed: {str(e)}")
             return False
+    
+    def analyze_conversation_history(self, history: List[Dict]) -> Dict:
+        """
+        Analyze conversation history to provide context for AI replies.
+        
+        Args:
+            history: List of email data dictionaries in chronological order
+            
+        Returns:
+            Dict containing analysis results
+        """
+        if not self.model:
+            logger.error("Gemini API not initialized")
+            return {}
+        
+        try:
+            # Extract key information from history
+            conversation_data = []
+            participants = set()
+            subjects = []
+            
+            for email in history:
+                # Add participants
+                participants.add(email.get('from', ''))
+                for recipient in email.get('recipients', {}).get('to', []):
+                    participants.add(recipient)
+                
+                # Track subject evolution
+                subjects.append(email.get('subject', ''))
+                
+                # Add to conversation data
+                conversation_data.append({
+                    'from': email.get('from', ''),
+                    'date': email.get('date', ''),
+                    'content': email.get('body', ''),
+                    'subject': email.get('subject', '')
+                })
+            
+            # Prepare prompt for analysis
+            prompt = (
+                "Analyze this email conversation and provide insights. "
+                "Focus on key points, tone patterns, and important context.\n\n"
+                "Conversation History:\n"
+            )
+            
+            for email in conversation_data:
+                prompt += f"\nFrom: {email['from']}\nDate: {email['date']}"
+                prompt += f"\nSubject: {email['subject']}\n{email['content']}\n"
+            
+            # Generate analysis
+            response = self.model.generate_content(prompt)
+            if not response.text:
+                return {}
+            
+            # Parse insights from response
+            insights = self._parse_conversation_insights(response.text)
+            
+            # Add metadata
+            insights.update({
+                'participant_count': len(participants),
+                'participants': list(participants),
+                'thread_length': len(history),
+                'subject_evolution': subjects,
+                'time_span': self._calculate_time_span(history)
+            })
+            
+            logger.info("Generated conversation analysis")
+            return insights
+            
+        except Exception as e:
+            logger.error(f"Error analyzing conversation history: {str(e)}")
+            return {}
+    
+    def _parse_conversation_insights(self, analysis_text: str) -> Dict:
+        """Parse AI-generated conversation analysis into structured data."""
+        insights = {
+            'key_points': [],
+            'tone_patterns': [],
+            'context_notes': [],
+            'suggested_approach': None
+        }
+        
+        try:
+            # Split analysis into sections
+            sections = analysis_text.split('\n\n')
+            current_section = None
+            
+            for line in analysis_text.split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Detect section headers
+                if line.lower().startswith('key points:'):
+                    current_section = 'key_points'
+                elif line.lower().startswith('tone:'):
+                    current_section = 'tone_patterns'
+                elif line.lower().startswith('context:'):
+                    current_section = 'context_notes'
+                elif line.lower().startswith('suggested approach:'):
+                    current_section = 'suggested_approach'
+                elif current_section:
+                    # Add content to appropriate section
+                    if current_section == 'suggested_approach':
+                        insights[current_section] = line
+                    else:
+                        insights[current_section].append(line)
+            
+            return insights
+            
+        except Exception as e:
+            logger.error(f"Error parsing conversation insights: {str(e)}")
+            return insights
+    
+    def _calculate_time_span(self, history: List[Dict]) -> Dict:
+        """Calculate the time span of the conversation."""
+        try:
+            dates = [
+                email.get('date') for email in history 
+                if isinstance(email.get('date'), datetime)
+            ]
+            
+            if not dates:
+                return {'duration': None, 'start': None, 'end': None}
+            
+            start_date = min(dates)
+            end_date = max(dates)
+            duration = end_date - start_date
+            
+            return {
+                'duration': duration,
+                'start': start_date.isoformat(),
+                'end': end_date.isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating time span: {str(e)}")
+            return {'duration': None, 'start': None, 'end': None}
