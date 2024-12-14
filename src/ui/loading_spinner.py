@@ -6,24 +6,36 @@ Provides a modern, animated loading indicator that can be centered on its parent
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import Qt, QTimer, QSize
 from PyQt6.QtGui import QPainter, QColor, QPen
+from typing import Optional
 
 class LoadingSpinner(QWidget):
     """A loading spinner widget that shows an animated spinning circle."""
     
-    def __init__(self, parent=None, center_on_parent=True):
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        center_on_parent: bool = True
+    ) -> None:
+        """
+        Initialize the loading spinner.
+        
+        Args:
+            parent: Optional parent widget
+            center_on_parent: Whether to center the spinner on its parent
+        """
         super().__init__(parent)
         
         # Configuration
-        self.angle = 0
-        self.timer = QTimer(self)
+        self.angle: float = 0
+        self.timer: QTimer = QTimer(self)
         self.timer.timeout.connect(self.rotate)
-        self.angular_speed = 5
-        self.size = 40
-        self.line_width = 3
-        self.inner_radius = 10
-        self.color = QColor(0, 120, 212)  # Modern blue color
-        self.num_lines = 12
-        self.line_length = 8
+        self.angular_speed: float = 5
+        self.size: int = 40
+        self.line_width: int = 3
+        self.inner_radius: int = 10
+        self.color: QColor = QColor(0, 120, 212)  # Modern blue color
+        self.num_lines: int = 12
+        self.line_length: int = 8
         
         # Widget properties
         self.setFixedSize(self.size, self.size)
@@ -33,7 +45,7 @@ class LoadingSpinner(QWidget):
         # Hide by default
         self.hide()
     
-    def move_to_center(self):
+    def move_to_center(self) -> None:
         """Center the spinner on its parent widget."""
         if self.parent():
             parent_rect = self.parent().rect()
@@ -42,24 +54,29 @@ class LoadingSpinner(QWidget):
                 parent_rect.center().y() - self.height() // 2
             )
     
-    def start(self):
+    def start(self) -> None:
         """Start the spinning animation."""
         self.show()
         if not self.timer.isActive():
             self.timer.start(50)  # Update every 50ms
     
-    def stop(self):
+    def stop(self) -> None:
         """Stop the spinning animation."""
         self.timer.stop()
         self.hide()
     
-    def rotate(self):
+    def rotate(self) -> None:
         """Rotate the spinner by the angular speed."""
         self.angle = (self.angle + self.angular_speed) % 360
         self.update()
     
-    def paintEvent(self, event):
-        """Paint the spinner with fading lines."""
+    def paintEvent(self, event: QPainter.Event) -> None:
+        """
+        Paint the spinner with fading lines.
+        
+        Args:
+            event: Paint event
+        """
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
@@ -102,16 +119,37 @@ class LoadingSpinner(QWidget):
             )
     
     def sizeHint(self) -> QSize:
-        """Return the recommended size for the widget."""
+        """
+        Return the recommended size for the widget.
+        
+        Returns:
+            QSize with the recommended dimensions
+        """
         return QSize(self.size, self.size)
     
     def _sin_deg(self, angle: float) -> float:
-        """Calculate sine of angle in degrees."""
+        """
+        Calculate sine of angle in degrees.
+        
+        Args:
+            angle: Angle in degrees
+            
+        Returns:
+            Sine value of the angle
+        """
         from math import sin, pi
         return sin(angle * pi / 180)
     
     def _cos_deg(self, angle: float) -> float:
-        """Calculate cosine of angle in degrees."""
+        """
+        Calculate cosine of angle in degrees.
+        
+        Args:
+            angle: Angle in degrees
+            
+        Returns:
+            Cosine value of the angle
+        """
         from math import cos, pi
         return cos(angle * pi / 180)
 """ 
