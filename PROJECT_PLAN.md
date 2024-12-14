@@ -35,7 +35,7 @@
 - ✅ Create email account dialog UI
 - ✅ Implement IMAP/SMTP connection handling
 - ✅ Create account configuration storage
-- 📅 Implement account testing functionality
+- ✅ Implement account testing functionality
   - 📅 Test IMAP connection
   - 📅 Test SMTP connection
   - 📅 Validate server settings
@@ -45,6 +45,26 @@
   - ✅ Research encryption methods
   - ✅ Implement password encryption
   - ✅ Add secure storage mechanism
+- 📅 Add Quick Setup for Popular Providers
+  - 📅 Gmail Integration
+    - Auto-configuration of IMAP/SMTP settings
+    - OAuth2 authentication flow
+    - Direct login redirect button
+    - App-specific password guidance
+  - 📅 Outlook Integration
+    - Auto-configuration of server settings
+    - Microsoft OAuth implementation
+    - Direct login redirect button
+    - Modern authentication support
+  - 📅 Yahoo Mail Integration
+    - Automatic server detection
+    - OAuth2 authentication
+    - Direct login redirect button
+  - 📅 Provider-Specific Features
+    - Provider detection from email address
+    - Custom setup instructions per provider
+    - Security requirement notifications
+    - Two-factor authentication handling
 
 ### 2.3 Email Operations
 - ✅ Implement basic email fetching
@@ -206,6 +226,7 @@
 Currently working on:
 - Setting up email folder support
 - Implementing account editing capabilities
+- Adding quick setup for popular email providers
 
 ## Notes
 - Update this file after completing each task
@@ -213,3 +234,6 @@ Currently working on:
 - Mark blocked tasks with reasons
 - Regular review and prioritization needed
 - Security is a cross-cutting concern that affects all components
+- Provider-specific authentication flows require OAuth2 implementation
+- Auto-login features must follow security best practices
+- Direct login buttons should handle various authentication scenarios

@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 import json
+from utils.logger import logger
 
 # Load environment variables from .env file
 load_dotenv()
@@ -24,6 +25,8 @@ class Config:
         # Load or create configuration files
         self.settings = self._load_settings()
         self.accounts = self._load_accounts()
+        
+        logger.logger.info("Configuration initialized")
     
     def _load_settings(self):
         """Load application settings from file."""
@@ -38,7 +41,8 @@ class Config:
             try:
                 with open(self.settings_file, "r") as f:
                     return {**default_settings, **json.load(f)}
-            except:
+            except Exception as e:
+                logger.log_error(e, {'context': 'Loading settings'})
                 return default_settings
         else:
             self._save_settings(default_settings)
@@ -46,8 +50,11 @@ class Config:
     
     def _save_settings(self, settings):
         """Save settings to file."""
-        with open(self.settings_file, "w") as f:
-            json.dump(settings, f, indent=4)
+        try:
+            with open(self.settings_file, "w") as f:
+                json.dump(settings, f, indent=4)
+        except Exception as e:
+            logger.log_error(e, {'context': 'Saving settings'})
     
     def _load_accounts(self):
         """Load email accounts from file."""
@@ -55,14 +62,27 @@ class Config:
             try:
                 with open(self.accounts_file, "r") as f:
                     return json.load(f)
-            except:
+            except Exception as e:
+                logger.log_error(e, {'context': 'Loading accounts'})
                 return []
         return []
     
     def _save_accounts(self):
         """Save email accounts to file."""
-        with open(self.accounts_file, "w") as f:
-            json.dump(self.accounts, f, indent=4)
+        try:
+            with open(self.accounts_file, "w") as f:
+                json.dump(self.accounts, f, indent=4)
+        except Exception as e:
+            logger.log_error(e, {'context': 'Saving accounts'})
+    
+    def get_accounts(self):
+        """
+        Get list of configured email accounts.
+        
+        Returns:
+            list: List of account configurations
+        """
+        return self.accounts
     
     def add_account(self, account_data):
         """
@@ -73,6 +93,7 @@ class Config:
         """
         self.accounts.append(account_data)
         self._save_accounts()
+        logger.logger.info(f"Added account: {account_data['email']}")
     
     def remove_account(self, email):
         """
@@ -83,6 +104,7 @@ class Config:
         """
         self.accounts = [acc for acc in self.accounts if acc["email"] != email]
         self._save_accounts()
+        logger.logger.info(f"Removed account: {email}")
     
     def update_account(self, email, account_data):
         """
@@ -97,6 +119,7 @@ class Config:
                 self.accounts[i] = account_data
                 break
         self._save_accounts()
+        logger.logger.info(f"Updated account: {email}")
     
     def get_account(self, email):
         """
@@ -121,4 +144,5 @@ class Config:
             settings (dict): New settings to apply
         """
         self.settings.update(settings)
-        self._save_settings(self.settings) 
+        self._save_settings(self.settings)
+        logger.logger.info("Updated application settings") 

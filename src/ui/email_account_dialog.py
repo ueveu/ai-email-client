@@ -1,17 +1,21 @@
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                             QLineEdit, QFormLayout, QPushButton, QSpinBox,
-                            QCheckBox, QMessageBox, QProgressDialog)
+                            QCheckBox, QMessageBox, QProgressDialog, QGroupBox)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 import imaplib
 import smtplib
 import ssl
 from email.mime.text import MIMEText
 from security.credential_manager import CredentialManager
+from email_providers import EmailProviders, Provider
+from utils.error_handler import handle_errors
+from utils.logger import logger
 
 class ConnectionTester(QThread):
     """
     Thread for testing email server connections without blocking the UI.
     """
+    
     finished = pyqtSignal(bool, str, str)  # Success, Server Type, Message
     
     def __init__(self, server_type, settings):
@@ -47,7 +51,7 @@ class ConnectionTester(QThread):
             
             self.finished.emit(True, "IMAP", "IMAP connection successful")
         except Exception as e:
-            self.finished.emit(False, "IMAP", f"IMAP connection failed: {str(e)}")
+            self.finished.emit(False, "IMAP", str(e))
     
     def _test_smtp(self):
         try:
@@ -68,7 +72,7 @@ class ConnectionTester(QThread):
             
             self.finished.emit(True, "SMTP", "SMTP connection successful")
         except Exception as e:
-            self.finished.emit(False, "SMTP", f"SMTP connection failed: {str(e)}")
+            self.finished.emit(False, "SMTP", str(e))
 
 class EmailAccountDialog(QDialog):
     def __init__(self, parent=None, account_data=None):
@@ -88,13 +92,54 @@ class EmailAccountDialog(QDialog):
             self.load_account_data()
     
     def setup_ui(self):
+        """Sets up the UI components."""
         layout = QVBoxLayout(self)
         
-        # Create form layout for input fields
+        # Quick Setup Section
+        quick_setup = QGroupBox("Quick Setup")
+        quick_layout = QVBoxLayout()
+        
+        provider_buttons = QHBoxLayout()
+        
+        # Gmail button
+        gmail_btn = QPushButton("Gmail")
+        gmail_btn.clicked.connect(lambda: self.quick_setup(Provider.GMAIL))
+        provider_buttons.addWidget(gmail_btn)
+        
+        # Outlook button
+        outlook_btn = QPushButton("Outlook")
+        outlook_btn.clicked.connect(lambda: self.quick_setup(Provider.OUTLOOK))
+        provider_buttons.addWidget(outlook_btn)
+        
+        # Yahoo button
+        yahoo_btn = QPushButton("Yahoo")
+        yahoo_btn.clicked.connect(lambda: self.quick_setup(Provider.YAHOO))
+        provider_buttons.addWidget(yahoo_btn)
+        
+        quick_layout.addLayout(provider_buttons)
+        
+        # Help buttons
+        help_buttons = QHBoxLayout()
+        
+        app_password_btn = QPushButton("Get App Password")
+        app_password_btn.clicked.connect(self.open_app_password_setup)
+        help_buttons.addWidget(app_password_btn)
+        
+        help_btn = QPushButton("Help")
+        help_btn.clicked.connect(self.open_help)
+        help_buttons.addWidget(help_btn)
+        
+        quick_layout.addLayout(help_buttons)
+        quick_setup.setLayout(quick_layout)
+        layout.addWidget(quick_setup)
+        
+        # Manual Setup Section
+        manual_setup = QGroupBox("Manual Setup")
         form_layout = QFormLayout()
         
         # Email account details
         self.email_input = QLineEdit()
+        self.email_input.textChanged.connect(self.on_email_changed)
         self.name_input = QLineEdit()
         form_layout.addRow("Email Address:", self.email_input)
         form_layout.addRow("Display Name:", self.name_input)
@@ -140,7 +185,8 @@ class EmailAccountDialog(QDialog):
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
         form_layout.addRow("Password:", self.password_input)
         
-        layout.addLayout(form_layout)
+        manual_setup.setLayout(form_layout)
+        layout.addWidget(manual_setup)
         
         # Buttons
         button_layout = QHBoxLayout()
@@ -157,6 +203,82 @@ class EmailAccountDialog(QDialog):
         button_layout.addWidget(self.cancel_button)
         
         layout.addLayout(button_layout)
+    
+    @handle_errors
+    def quick_setup(self, provider: Provider):
+        """Handle quick setup for a specific provider."""
+        config = EmailProviders.get_provider_config(provider)
+        if not config:
+            return
+        
+        # Set server settings
+        self.imap_server.setText(config.imap_server)
+        self.imap_port.setValue(config.imap_port)
+        self.imap_ssl.setChecked(config.imap_ssl)
+        self.smtp_server.setText(config.smtp_server)
+        self.smtp_port.setValue(config.smtp_port)
+        self.smtp_ssl.setChecked(config.smtp_ssl)
+        
+        # Open provider setup in browser
+        email = self.email_input.text()
+        EmailProviders.open_provider_setup(provider, email if email else None)
+        
+        # Show setup instructions
+        QMessageBox.information(
+            self,
+            "Provider Setup",
+            f"Please complete the following steps:\n\n"
+            f"1. Log in to your {config.name} account in the browser\n"
+            f"2. If required, set up an app password\n"
+            f"3. Enter your email and app password here\n\n"
+            f"Click 'Get App Password' if you need to create one."
+        )
+    
+    @handle_errors
+    def open_app_password_setup(self):
+        """Open app password setup page for the current provider."""
+        email = self.email_input.text()
+        if not email:
+            QMessageBox.warning(
+                self,
+                "Input Required",
+                "Please enter your email address first."
+            )
+            return
+        
+        provider = EmailProviders.detect_provider(email)
+        EmailProviders.open_app_password_setup(provider)
+    
+    @handle_errors
+    def open_help(self):
+        """Open help page for the current provider."""
+        email = self.email_input.text()
+        if not email:
+            QMessageBox.warning(
+                self,
+                "Input Required",
+                "Please enter your email address first."
+            )
+            return
+        
+        provider = EmailProviders.detect_provider(email)
+        EmailProviders.open_help(provider)
+    
+    @handle_errors
+    def on_email_changed(self, email):
+        """Auto-configure settings based on email address."""
+        if not email:
+            return
+        
+        config = EmailProviders.get_config_for_email(email)
+        if config:
+            # Auto-fill server settings
+            self.imap_server.setText(config.imap_server)
+            self.imap_port.setValue(config.imap_port)
+            self.imap_ssl.setChecked(config.imap_ssl)
+            self.smtp_server.setText(config.smtp_server)
+            self.smtp_port.setValue(config.smtp_port)
+            self.smtp_ssl.setChecked(config.smtp_ssl)
     
     def load_account_data(self):
         """Load existing account data into the form fields."""
@@ -176,6 +298,7 @@ class EmailAccountDialog(QDialog):
                 self.password_input.setText(credentials['password'])
     
     def get_account_data(self):
+        """Get account data from form fields."""
         return {
             'email': self.email_input.text(),
             'name': self.name_input.text(),
@@ -188,6 +311,7 @@ class EmailAccountDialog(QDialog):
             'password': self.password_input.text()
         }
     
+    @handle_errors
     def validate_and_accept(self):
         """Validate the form data before accepting."""
         if not self.email_input.text():
@@ -222,12 +346,14 @@ class EmailAccountDialog(QDialog):
             self.accept()
             
         except Exception as e:
+            logger.log_error(e, {'context': 'Storing credentials'})
             QMessageBox.critical(
                 self,
                 "Error",
                 f"Failed to store credentials securely: {str(e)}"
             )
     
+    @handle_errors
     def test_connection(self, server_type):
         """Test connection to email server."""
         settings = self.get_account_data()
@@ -274,6 +400,7 @@ class EmailAccountDialog(QDialog):
         # Start the test
         tester.start()
     
+    @handle_errors
     def test_all_connections(self):
         """Test both IMAP and SMTP connections."""
         self.test_connection("IMAP")
