@@ -7,6 +7,7 @@ from typing import List, Dict, Optional
 import os
 from dotenv import load_dotenv
 from utils.logger import logger
+from .reply_learning_service import ReplyLearningService
 
 class AIService:
     """
@@ -26,8 +27,9 @@ class AIService:
         genai.configure(api_key=api_key)
         self.model = genai.GenerativeModel('gemini-pro')
         
-        # Initialize conversation history
+        # Initialize conversation history and learning service
         self.conversation_history = []
+        self.learning_service = ReplyLearningService()
     
     def analyze_email_content(self, email_content: str, subject: str) -> Dict:
         """
@@ -52,12 +54,19 @@ class AIService:
             2. Key points or requests
             3. Tone of the message (formal, informal, urgent, etc.)
             4. Any action items mentioned
+            5. Context type (business, personal, technical, etc.)
             
             Format the response as JSON.
             """
             
             response = self.model.generate_content(prompt)
-            return eval(response.text)  # Convert string response to dict
+            analysis = eval(response.text)  # Convert string response to dict
+            
+            # Store context type for learning
+            if 'context_type' in analysis:
+                self.current_context_type = analysis['context_type']
+            
+            return analysis
             
         except Exception as e:
             logger.error(f"Error analyzing email content: {str(e)}")
@@ -66,7 +75,8 @@ class AIService:
                 "sentiment": "unknown",
                 "key_points": [],
                 "tone": "unknown",
-                "action_items": []
+                "action_items": [],
+                "context_type": "unknown"
             }
     
     def generate_reply_suggestions(self, 
@@ -87,6 +97,20 @@ class AIService:
             List[Dict]: List of reply suggestions with variations
         """
         try:
+            # Analyze email to get context type if not already set
+            if not hasattr(self, 'current_context_type'):
+                analysis = self.analyze_email_content(email_content, subject)
+                self.current_context_type = analysis.get('context_type', 'unknown')
+            
+            # Get preferred tone for this context if none specified
+            if not tone:
+                tone = self.learning_service.get_preferred_tone(self.current_context_type)
+            
+            # Get common patterns for this context
+            greetings = self.learning_service.get_common_patterns('greeting', limit=3)
+            closings = self.learning_service.get_common_patterns('closing', limit=3)
+            common_phrases = self.learning_service.get_common_patterns('phrase', limit=5)
+            
             # Build conversation context
             conversation_context = ""
             if context:
@@ -99,6 +123,17 @@ class AIService:
             if tone:
                 tone_instruction = f"Use a {tone} tone in the responses."
             
+            # Include learned patterns in prompt
+            patterns_instruction = ""
+            if greetings or closings or common_phrases:
+                patterns_instruction = "Consider using these common patterns:\n"
+                if greetings:
+                    patterns_instruction += f"Greetings: {', '.join(greetings)}\n"
+                if closings:
+                    patterns_instruction += f"Closings: {', '.join(closings)}\n"
+                if common_phrases:
+                    patterns_instruction += f"Phrases: {', '.join(common_phrases)}\n"
+            
             prompt = f"""
             Generate three different reply suggestions for this email:
             
@@ -110,6 +145,7 @@ class AIService:
             {conversation_context}
             
             {tone_instruction}
+            {patterns_instruction}
             
             Generate three different responses with varying styles:
             1. Professional and concise
@@ -157,11 +193,25 @@ class AIService:
             str: Adjusted reply text
         """
         try:
+            # Get common patterns for maintaining consistency
+            greetings = self.learning_service.get_common_patterns('greeting', limit=2)
+            closings = self.learning_service.get_common_patterns('closing', limit=2)
+            
+            patterns_instruction = ""
+            if greetings or closings:
+                patterns_instruction = "Try to maintain these patterns if present:\n"
+                if greetings:
+                    patterns_instruction += f"Greetings: {', '.join(greetings)}\n"
+                if closings:
+                    patterns_instruction += f"Closings: {', '.join(closings)}\n"
+            
             prompt = f"""
             Adjust the tone of this reply to be {desired_tone}, while keeping the same message:
             
             Original Reply:
             {reply_text}
+            
+            {patterns_instruction}
             
             Please provide only the adjusted text without any explanations.
             """
@@ -181,15 +231,25 @@ class AIService:
             selected_reply (str): The reply text that was selected by the user
             context (Dict): Context information about the email and conversation
         """
-        # Add selected reply to conversation history
-        self.conversation_history.append({
-            "role": "outgoing",
-            "content": selected_reply,
-            "context": context
-        })
-        
-        # Note: In a future implementation, this method could be enhanced to:
-        # 1. Store successful replies in a database
-        # 2. Analyze patterns in selected replies
-        # 3. Adjust suggestion algorithms based on user preferences
-        # 4. Train a local model on user's writing style 
+        try:
+            # Add selected reply to conversation history
+            self.conversation_history.append({
+                "role": "outgoing",
+                "content": selected_reply,
+                "context": context
+            })
+            
+            # Store in learning service
+            self.learning_service.store_selected_reply(
+                email_context=context,
+                selected_reply=selected_reply,
+                tone=context.get('tone'),
+                style=context.get('style')
+            )
+            
+        except Exception as e:
+            logger.error(f"Error learning from selection: {str(e)}")
+    
+    def get_learning_stats(self) -> Dict:
+        """Get statistics about the learning data."""
+        return self.learning_service.get_learning_stats()

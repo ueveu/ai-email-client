@@ -4,7 +4,7 @@ Widget for displaying and managing AI-generated email reply suggestions.
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                            QPushButton, QComboBox, QTextEdit, QFrame,
-                           QScrollArea, QSizePolicy)
+                           QScrollArea, QSizePolicy, QMessageBox)
 from PyQt6.QtCore import pyqtSignal, Qt
 from services.ai_service import AIService
 from utils.logger import logger
@@ -18,11 +18,20 @@ class ReplySuggestionWidget(QWidget):
         super().__init__(parent)
         self.ai_service = AIService()
         self.current_suggestions = []
+        self.current_email_context = None  # Store current email context
         self.setup_ui()
+        
+        # Initialize stats
+        self.update_learning_stats()
     
     def setup_ui(self):
         """Set up the UI components."""
         main_layout = QVBoxLayout(self)
+        
+        # Stats section
+        self.stats_label = QLabel()
+        self.stats_label.setWordWrap(True)
+        main_layout.addWidget(self.stats_label)
         
         # Controls section
         controls_layout = QHBoxLayout()
@@ -58,12 +67,85 @@ class ReplySuggestionWidget(QWidget):
         
         main_layout.addWidget(scroll_area)
     
-    def clear_suggestions(self):
-        """Clear all current suggestions from the display."""
-        while self.suggestions_layout.count():
-            child = self.suggestions_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
+    def update_learning_stats(self):
+        """Update the displayed learning statistics."""
+        try:
+            stats = self.ai_service.get_learning_stats()
+            
+            stats_text = f"Learning Stats: {stats['total_replies']} replies analyzed\n"
+            
+            if stats['common_tones']:
+                stats_text += "Common tones: "
+                tone_items = [f"{tone}({count})" 
+                            for tone, count in stats['common_tones'].items()]
+                stats_text += ", ".join(tone_items)
+            
+            self.stats_label.setText(stats_text)
+            
+        except Exception as e:
+            logger.error(f"Error updating learning stats: {str(e)}")
+            self.stats_label.setText("Learning stats unavailable")
+    
+    def set_email_context(self, email_content: str, subject: str, context: dict):
+        """
+        Set the current email context for generating replies.
+        
+        Args:
+            email_content (str): The content of the email to reply to
+            subject (str): The subject of the email
+            context (dict): Additional context about the email
+        """
+        self.current_email_content = email_content
+        self.current_subject = subject
+        self.current_email_context = context
+        
+        # Try to set appropriate tone based on context
+        try:
+            analysis = self.ai_service.analyze_email_content(email_content, subject)
+            if 'context_type' in analysis:
+                preferred_tone = self.ai_service.learning_service.get_preferred_tone(
+                    analysis['context_type']
+                )
+                if preferred_tone:
+                    index = self.tone_combo.findText(preferred_tone)
+                    if index >= 0:
+                        self.tone_combo.setCurrentIndex(index)
+        except Exception as e:
+            logger.error(f"Error setting email context: {str(e)}")
+    
+    def on_reply_selected(self, suggestion: dict):
+        """
+        Handle reply selection and learn from it.
+        
+        Args:
+            suggestion (dict): The selected suggestion data
+        """
+        try:
+            # Learn from selection
+            if self.current_email_context:
+                context = {
+                    **self.current_email_context,
+                    'tone': suggestion.get('tone'),
+                    'style': suggestion.get('style')
+                }
+                self.ai_service.learn_from_selection(
+                    suggestion['reply_text'],
+                    context
+                )
+            
+            # Update stats
+            self.update_learning_stats()
+            
+            # Emit selected text
+            self.reply_selected.emit(suggestion['reply_text'])
+            
+        except Exception as e:
+            logger.error(f"Error handling reply selection: {str(e)}")
+            QMessageBox.warning(
+                self,
+                "Learning Error",
+                "Failed to learn from selection, but reply was copied."
+            )
     
     def display_suggestions(self, suggestions):
         """
@@ -105,8 +187,8 @@ class ReplySuggestionWidget(QWidget):
             
             select_btn = QPushButton("Use This Reply")
             select_btn.clicked.connect(
-                lambda checked, text=suggestion['reply_text']: 
-                self.reply_selected.emit(text)
+                lambda checked, s=suggestion: 
+                self.on_reply_selected(s)
             )
             
             customize_btn = QPushButton("Customize")
@@ -128,6 +210,40 @@ class ReplySuggestionWidget(QWidget):
         
         # Add stretch at the end
         self.suggestions_layout.addStretch()
+    
+    def customize_reply(self, reply_text: str):
+        """
+        Open a dialog to customize the selected reply.
+        
+        Args:
+            reply_text (str): The reply text to customize
+        """
+        from .reply_customization_dialog import ReplyCustomizationDialog
+        dialog = ReplyCustomizationDialog(reply_text, self.ai_service, self)
+        if dialog.exec():
+            customized_text = dialog.get_customized_text()
+            
+            # Learn from customization
+            if self.current_email_context:
+                context = {
+                    **self.current_email_context,
+                    'tone': self.tone_combo.currentText(),
+                    'customized': True
+                }
+                self.ai_service.learn_from_selection(
+                    customized_text,
+                    context
+                )
+            
+            self.update_learning_stats()
+            self.reply_selected.emit(customized_text)
+    
+    def clear_suggestions(self):
+        """Clear all current suggestions from the display."""
+        while self.suggestions_layout.count():
+            child = self.suggestions_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
     
     def generate_suggestions(self, email_content: str, subject: str, context=None):
         """
@@ -151,19 +267,6 @@ class ReplySuggestionWidget(QWidget):
         except Exception as e:
             logger.error(f"Error generating suggestions: {str(e)}")
             self.display_error(str(e))
-    
-    def customize_reply(self, reply_text: str):
-        """
-        Open a dialog to customize the selected reply.
-        
-        Args:
-            reply_text (str): The reply text to customize
-        """
-        from .reply_customization_dialog import ReplyCustomizationDialog
-        dialog = ReplyCustomizationDialog(reply_text, self.ai_service, self)
-        if dialog.exec():
-            customized_text = dialog.get_customized_text()
-            self.reply_selected.emit(customized_text)
     
     def on_tone_changed(self, new_tone: str):
         """
@@ -193,8 +296,6 @@ class ReplySuggestionWidget(QWidget):
     
     def refresh_suggestions(self):
         """Refresh the current suggestions with the selected tone."""
-        # Re-generate suggestions for the current email
-        # Note: This requires storing the current email content and subject
         if hasattr(self, 'current_email_content') and hasattr(self, 'current_subject'):
             self.generate_suggestions(
                 self.current_email_content,
