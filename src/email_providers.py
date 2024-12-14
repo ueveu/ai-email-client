@@ -44,9 +44,9 @@ class EmailProviders:
             smtp_port=587,
             smtp_ssl=True,
             oauth_supported=True,
-            setup_url="https://accounts.google.com/signin",
+            setup_url="https://accounts.google.com/signin/v2/identifier",
             app_password_url="https://myaccount.google.com/apppasswords",
-            help_url="https://support.google.com/mail/answer/7126229",
+            help_url="https://support.google.com/mail/answer/185833",
             oauth_scopes=[
                 "https://mail.google.com/",
                 "https://www.googleapis.com/auth/gmail.modify",
@@ -62,8 +62,9 @@ class EmailProviders:
             smtp_port=587,
             smtp_ssl=True,
             oauth_supported=True,
-            setup_url="https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
-            help_url="https://support.microsoft.com/en-us/office/pop-imap-and-smtp-settings-8361e398-8af4-4e97-b147-6c6c4ac95353",
+            setup_url="https://login.live.com/login.srf",
+            app_password_url="https://account.live.com/proofs/AppPassword",
+            help_url="https://support.microsoft.com/en-us/account-billing/using-app-passwords-with-apps-that-don-t-support-two-step-verification-5896ed9b-4263-e681-128a-a6f2979a7944",
             oauth_scopes=[
                 "offline_access",
                 "https://outlook.office.com/IMAP.AccessAsUser.All",
@@ -80,8 +81,8 @@ class EmailProviders:
             smtp_ssl=True,
             oauth_supported=True,
             setup_url="https://login.yahoo.com",
-            app_password_url="https://login.yahoo.com/account/security",
-            help_url="https://help.yahoo.com/kb/SLN4075.html"
+            app_password_url="https://login.yahoo.com/account/security/app-passwords",
+            help_url="https://help.yahoo.com/kb/generate-third-party-passwords-sln15241.html"
         )
     }
     
