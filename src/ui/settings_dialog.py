@@ -5,15 +5,17 @@ Settings dialog for configuring application preferences and options.
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
                            QWidget, QLabel, QComboBox, QCheckBox, QSpinBox,
                            QPushButton, QGroupBox, QFormLayout, QDialogButtonBox,
-                           QLineEdit, QScrollArea, QColorDialog, QFileDialog)
+                           QLineEdit, QScrollArea, QColorDialog, QFileDialog,
+                           QTreeWidget, QTreeWidgetItem, QKeySequenceEdit)
 from PyQt6.QtCore import Qt, QSettings
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QKeySequence
 import json
 from pathlib import Path
 from utils.logger import logger
 from services.credential_service import CredentialService
 from services.ai_service import AIService
 from services.theme_service import ThemeService
+from services.shortcut_service import ShortcutService
 
 class SettingsDialog(QDialog):
     """Dialog for managing application settings and preferences."""
@@ -24,6 +26,7 @@ class SettingsDialog(QDialog):
         self.credential_service = CredentialService()
         self.ai_service = AIService()
         self.theme_service = ThemeService()
+        self.shortcut_service = ShortcutService()
         self.setup_ui()
         self.load_settings()
         
@@ -35,8 +38,8 @@ class SettingsDialog(QDialog):
     def setup_ui(self):
         """Set up the settings dialog UI."""
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(600)
-        self.setMinimumHeight(500)
+        self.setMinimumWidth(800)  # Increased width for shortcuts tab
+        self.setMinimumHeight(600)  # Increased height for shortcuts tab
         
         layout = QVBoxLayout(self)
         
@@ -46,6 +49,7 @@ class SettingsDialog(QDialog):
         # Add settings tabs
         tab_widget.addTab(self.create_general_tab(), "General")
         tab_widget.addTab(self.create_appearance_tab(), "Appearance")
+        tab_widget.addTab(self.create_shortcuts_tab(), "Keyboard Shortcuts")
         tab_widget.addTab(self.create_ai_tab(), "AI Settings")
         tab_widget.addTab(self.create_security_tab(), "Security")
         tab_widget.addTab(self.create_accounts_tab(), "Email Accounts")
@@ -165,6 +169,135 @@ class SettingsDialog(QDialog):
         
         layout.addStretch()
         return tab
+    
+    def create_shortcuts_tab(self) -> QWidget:
+        """Create the keyboard shortcuts tab."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
+        # Search box
+        search_layout = QHBoxLayout()
+        search_label = QLabel("Search:")
+        self.shortcut_search = QLineEdit()
+        self.shortcut_search.setPlaceholderText("Search shortcuts...")
+        self.shortcut_search.textChanged.connect(self._filter_shortcuts)
+        
+        search_layout.addWidget(search_label)
+        search_layout.addWidget(self.shortcut_search)
+        layout.addLayout(search_layout)
+        
+        # Shortcuts tree
+        self.shortcuts_tree = QTreeWidget()
+        self.shortcuts_tree.setHeaderLabels(["Action", "Description", "Shortcut"])
+        self.shortcuts_tree.setColumnWidth(0, 200)  # Action column
+        self.shortcuts_tree.setColumnWidth(1, 300)  # Description column
+        
+        # Populate tree
+        self._populate_shortcuts_tree()
+        
+        layout.addWidget(self.shortcuts_tree)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        reset_all_btn = QPushButton("Reset All to Defaults")
+        reset_all_btn.clicked.connect(self._reset_all_shortcuts)
+        
+        button_layout.addWidget(reset_all_btn)
+        button_layout.addStretch()
+        
+        layout.addLayout(button_layout)
+        
+        # Help text
+        help_text = QLabel(
+            "Double-click a shortcut to edit it. Press Escape to cancel editing. "
+            "Press Delete to remove a shortcut."
+        )
+        help_text.setWordWrap(True)
+        layout.addWidget(help_text)
+        
+        return tab
+    
+    def _populate_shortcuts_tree(self, filter_text: str = ""):
+        """Populate the shortcuts tree with current shortcuts."""
+        self.shortcuts_tree.clear()
+        
+        # Get categorized shortcuts
+        categories = self.shortcut_service.get_action_categories()
+        
+        for category, shortcuts in categories.items():
+            category_item = QTreeWidgetItem([category])
+            category_item.setExpanded(True)
+            
+            for action, key_sequence in shortcuts:
+                description = self.shortcut_service.get_action_description(action)
+                
+                # Apply filter if set
+                if filter_text and not any(
+                    filter_text.lower() in text.lower()
+                    for text in [action, description, key_sequence]
+                ):
+                    continue
+                
+                shortcut_item = QTreeWidgetItem([
+                    action,
+                    description,
+                    key_sequence
+                ])
+                
+                # Create and set up key sequence editor
+                editor = QKeySequenceEdit()
+                editor.setKeySequence(QKeySequence(key_sequence))
+                editor.editingFinished.connect(
+                    lambda item=shortcut_item, ed=editor:
+                    self._on_shortcut_edited(item, ed)
+                )
+                
+                category_item.addChild(shortcut_item)
+                self.shortcuts_tree.setItemWidget(shortcut_item, 2, editor)
+            
+            if category_item.childCount() > 0:
+                self.shortcuts_tree.addTopLevelItem(category_item)
+    
+    def _filter_shortcuts(self, text: str):
+        """Filter shortcuts based on search text."""
+        self._populate_shortcuts_tree(text)
+    
+    def _on_shortcut_edited(self, item: QTreeWidgetItem, editor: QKeySequenceEdit):
+        """Handle shortcut editing."""
+        action = item.text(0)
+        new_sequence = editor.keySequence().toString()
+        
+        # Check if sequence is available
+        if new_sequence and not self.shortcut_service.is_shortcut_available(new_sequence, action):
+            # Show warning and reset to original
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self,
+                "Shortcut Conflict",
+                f"The shortcut '{new_sequence}' is already in use."
+            )
+            editor.setKeySequence(QKeySequence(self.shortcut_service.get_shortcut(action)))
+            return
+        
+        # Update shortcut
+        self.shortcut_service.update_shortcut(action, new_sequence)
+    
+    def _reset_all_shortcuts(self):
+        """Reset all shortcuts to their default values."""
+        from PyQt6.QtWidgets import QMessageBox
+        
+        reply = QMessageBox.question(
+            self,
+            "Reset Shortcuts",
+            "Are you sure you want to reset all shortcuts to their default values?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            self.shortcut_service.reset_shortcuts()
+            self._populate_shortcuts_tree()
     
     def create_ai_tab(self) -> QWidget:
         """Create the AI settings tab."""

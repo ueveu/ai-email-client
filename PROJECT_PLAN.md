@@ -103,7 +103,7 @@
 - ✅ Create email analysis tab
 - ✅ Add loading indicators
 - ✅ Implement dark/light theme support
-- 📅 Add keyboard shortcuts
+- ✅ Add keyboard shortcuts
 - ✅ Create settings dialog
 - 📅 Implement status notifications
 - 📅 Add progress indicators for email operations
