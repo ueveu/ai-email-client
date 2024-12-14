@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
                            QTreeWidget, QTreeWidgetItem, QTextEdit, QPushButton,
-                           QLabel, QComboBox, QApplication, QMessageBox)
+                           QLabel, QComboBox, QApplication, QMessageBox,
+                           QRadioButton, QButtonGroup)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QClipboard
 from .folder_tree import FolderTree
@@ -77,10 +78,44 @@ class EmailAnalysisTab(QWidget):
         reply_widget = QWidget()
         reply_layout = QVBoxLayout(reply_widget)
         
+        # Tone selection
+        tone_layout = QHBoxLayout()
+        tone_layout.addWidget(QLabel("Reply Tone:"))
+        self.tone_group = QButtonGroup(self)
+        
+        for tone in ['Professional', 'Friendly', 'Formal', 'Casual']:
+            radio = QRadioButton(tone)
+            if tone == 'Professional':
+                radio.setChecked(True)
+            self.tone_group.addButton(radio)
+            tone_layout.addWidget(radio)
+        
+        tone_layout.addStretch()
+        reply_layout.addLayout(tone_layout)
+        
         reply_layout.addWidget(QLabel("AI Generated Replies:"))
         self.reply_suggestions = QTextEdit()
         self.reply_suggestions.setReadOnly(True)
         reply_layout.addWidget(self.reply_suggestions)
+        
+        # Feedback section
+        feedback_layout = QHBoxLayout()
+        self.feedback_combo = QComboBox()
+        self.feedback_combo.addItems([
+            "Select Feedback",
+            "Very Helpful",
+            "Somewhat Helpful",
+            "Not Helpful",
+            "Needs Improvement"
+        ])
+        feedback_layout.addWidget(self.feedback_combo)
+        
+        self.submit_feedback_btn = QPushButton("Submit Feedback")
+        self.submit_feedback_btn.clicked.connect(self.submit_feedback)
+        self.submit_feedback_btn.setEnabled(False)
+        feedback_layout.addWidget(self.submit_feedback_btn)
+        
+        reply_layout.addLayout(feedback_layout)
         
         # Buttons
         button_layout = QHBoxLayout()
@@ -105,6 +140,9 @@ class EmailAnalysisTab(QWidget):
         # Set initial splitter sizes (25% folders, 35% email list, 40% content)
         splitter.setSizes([250, 350, 400])
         right_splitter.setSizes([600, 400])  # 60% content, 40% replies
+        
+        # Connect feedback combo box
+        self.feedback_combo.currentIndexChanged.connect(self._on_feedback_selected)
     
     def set_email_manager(self, email_manager):
         """Set the email manager and initialize the view."""
@@ -246,11 +284,14 @@ class EmailAnalysisTab(QWidget):
                 )
                 return
             
+            # Get selected tone
+            tone = self.tone_group.checkedButton().text().lower()
+            
             # Prepare context for AI
             context = {
                 'conversation_history': self._get_conversation_history(email_data),
                 'relationship': self._determine_relationship(email_data),
-                'tone': 'professional'  # Default tone
+                'tone': tone
             }
             
             # Generate reply suggestions
@@ -267,11 +308,14 @@ class EmailAnalysisTab(QWidget):
                 for i, suggestion in enumerate(suggestions, 1):
                     self.reply_suggestions.append(f"\nSuggestion {i}:\n{'-' * 40}\n{suggestion}\n")
                 
-                # Enable copy button
+                # Enable copy button and feedback
                 self.copy_reply_btn.setEnabled(True)
+                self.feedback_combo.setEnabled(True)
+                self.feedback_combo.setCurrentIndex(0)
             else:
                 self.reply_suggestions.setText("Failed to generate reply suggestions.")
                 self.copy_reply_btn.setEnabled(False)
+                self.feedback_combo.setEnabled(False)
         
         except Exception as e:
             logger.error(f"Error generating reply: {str(e)}")
@@ -349,3 +393,70 @@ class EmailAnalysisTab(QWidget):
         except Exception as e:
             logger.error(f"Error determining relationship: {str(e)}")
             return 'unknown'
+    
+    def _on_feedback_selected(self, index):
+        """Handle feedback selection."""
+        self.submit_feedback_btn.setEnabled(index > 0)
+    
+    def submit_feedback(self):
+        """Submit user feedback for AI-generated replies."""
+        try:
+            # Get selected email data
+            selected_items = self.email_tree.selectedItems()
+            if not selected_items:
+                return
+            
+            email_data = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
+            if not email_data:
+                return
+            
+            # Get selected feedback
+            feedback = self.feedback_combo.currentText()
+            if feedback == "Select Feedback":
+                return
+            
+            # Get selected tone
+            tone = self.tone_group.checkedButton().text().lower()
+            
+            # Get AI service
+            ai_service = self.parent().ai_service
+            if not ai_service:
+                return
+            
+            # Prepare context for learning
+            context = {
+                'email_id': email_data.get('message_id'),
+                'subject': email_data.get('subject'),
+                'tone': tone,
+                'relationship': self._determine_relationship(email_data)
+            }
+            
+            # Get selected reply (if any text is selected)
+            cursor = self.reply_suggestions.textCursor()
+            selected_reply = cursor.selectedText()
+            
+            # If no text is selected, use the entire content
+            if not selected_reply:
+                selected_reply = self.reply_suggestions.toPlainText()
+            
+            # Submit feedback for learning
+            ai_service.learn_from_selection(
+                selected_reply,
+                context,
+                feedback
+            )
+            
+            # Show success message
+            self.parent().status_bar.showMessage("Feedback submitted successfully", 3000)
+            
+            # Reset feedback controls
+            self.feedback_combo.setCurrentIndex(0)
+            self.submit_feedback_btn.setEnabled(False)
+            
+        except Exception as e:
+            logger.error(f"Error submitting feedback: {str(e)}")
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to submit feedback: {str(e)}"
+            )
