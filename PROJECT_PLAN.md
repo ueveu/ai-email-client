@@ -31,13 +31,13 @@
 - ✅ Create email account dialog UI
 - ✅ Implement IMAP/SMTP connection handling
 - ✅ Create account configuration storage
-- ⏳ Implement account testing functionality
-  - Test IMAP connection
-  - Test SMTP connection
-  - Validate server settings
+- ✅ Implement account testing functionality
+  - ✅ Test IMAP connection
+  - ✅ Test SMTP connection
+  - ✅ Validate server settings
 - 📅 Add account editing capabilities
 - 📅 Add account deletion with confirmation
-- 📅 Implement secure password storage
+- ⏳ Implement secure password storage
   - Research encryption methods
   - Implement password encryption
   - Add secure storage mechanism
@@ -46,7 +46,7 @@
 - ✅ Implement basic email fetching
 - ✅ Create email list display
 - ✅ Implement email content viewing
-- 📅 Add email folder support
+- ⏳ Add email folder support
   - List folders
   - Handle folder navigation
   - Support folder operations
@@ -144,12 +144,11 @@
 
 ## Current Focus
 Currently working on:
-- Implementing account testing functionality
-- Adding secure password storage
+- Implementing secure password storage
 - Setting up email folder support
 
 ## Notes
 - Update this file after completing each task
 - Add new tasks as they are identified
 - Mark blocked tasks with reasons
-- Regular review and prioritization needed 
+- Regular review and prioritization needed
