@@ -9,6 +9,18 @@ The AI Email Assistant is a standalone desktop application built using Python an
 - Generate intelligent reply suggestions using the Gemini API.
 - Seamless integration with Thunderbird to display AI-generated replies.
 
+## Application Screenshots
+
+### Email Account Configuration
+![Email Account Configuration](docs/images/email-account-config.png)
+
+The email account configuration interface provides:
+- Quick setup options for Gmail, Outlook, and Yahoo
+- Manual configuration options for custom email servers
+- IMAP and SMTP server settings
+- Connection testing capabilities
+- SSL/TLS security options
+
 ## Setup Instructions
 
 ### Prerequisites

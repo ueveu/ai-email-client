@@ -8,9 +8,13 @@ from typing import Optional, Dict, List, Tuple
 from urllib.parse import urlencode, parse_qs
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
+from dotenv import load_dotenv
 from utils.logger import logger
 from utils.error_handler import handle_errors
 from security.credential_manager import CredentialManager
+
+# Load environment variables from .env file
+load_dotenv()
 
 class OAuthCallbackHandler(BaseHTTPRequestHandler):
     """Handle OAuth2 callback requests."""
@@ -18,26 +22,64 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         """Handle GET request with OAuth code."""
         try:
-            # Parse the authorization code from query parameters
+            # Parse the query parameters
             query_components = parse_qs(self.path.split('?')[1])
-            code = query_components['code'][0]
             
-            # Store the code for the main application to use
+            # Check for error response
+            if 'error' in query_components:
+                error = query_components['error'][0]
+                error_msg = f"OAuth Error: {error}"
+                if 'error_description' in query_components:
+                    error_msg += f" - {query_components['error_description'][0]}"
+                logger.logger.error(error_msg)
+                
+                # Store the error
+                self.server.oauth_error = error_msg
+                self.server.oauth_code = None
+                
+                # Send error response to browser
+                self.send_response(400)
+                self.send_header('Content-type', 'text/html')
+                self.end_headers()
+                error_html = f"""
+                <html><body>
+                <h2>Authentication Failed</h2>
+                <p>{error_msg}</p>
+                <p>Please check the application logs and verify your OAuth configuration.</p>
+                <p>You can close this window.</p>
+                </body></html>
+                """
+                self.wfile.write(error_html.encode())
+                return
+            
+            # Handle successful authentication
+            code = query_components['code'][0]
             self.server.oauth_code = code
+            self.server.oauth_error = None
             
             # Send success response
             self.send_response(200)
             self.send_header('Content-type', 'text/html')
             self.end_headers()
-            self.wfile.write(b"Authentication successful! You can close this window.")
+            success_html = """
+            <html><body>
+            <h2>Authentication Successful!</h2>
+            <p>You can close this window and return to the application.</p>
+            </body></html>
+            """
+            self.wfile.write(success_html.encode())
             
         except Exception as e:
+            error_msg = f"OAuth callback error: {str(e)}"
+            logger.logger.error(error_msg)
+            self.server.oauth_error = error_msg
+            self.server.oauth_code = None
+            
             # Send error response
             self.send_response(400)
             self.send_header('Content-type', 'text/html')
             self.end_headers()
-            self.wfile.write(b"Authentication failed! Please try again.")
-            logger.error(f"OAuth callback error: {str(e)}")
+            self.wfile.write(b"Authentication failed! Please check the application logs and try again.")
 
 class Provider(Enum):
     """Supported email providers."""
@@ -154,15 +196,29 @@ class EmailProviders:
         
         Returns:
             Dict: OAuth tokens and credentials
+        
+        Raises:
+            ValueError: If OAuth credentials are missing or authentication fails
         """
         config = cls.get_provider_config(Provider.GMAIL)
+        
+        # Debug logging
+        logger.logger.debug("Starting Gmail OAuth authentication flow")
+        logger.logger.debug(f"Using email: {email}")
+        logger.logger.debug(f"Client ID configured: {bool(config.client_id)}")
+        logger.logger.debug(f"Client Secret configured: {bool(config.client_secret)}")
+        
         if not config.client_id or not config.client_secret:
-            raise ValueError("Gmail OAuth credentials not configured")
+            error_msg = "Gmail OAuth credentials missing. Check your .env file."
+            logger.logger.error(error_msg)
+            raise ValueError(error_msg)
         
         # Start local server for OAuth callback
-        server, _ = cls.start_oauth_server()
+        server = HTTPServer(('localhost', 8080), OAuthCallbackHandler)
+        server.oauth_code = None
+        server.oauth_error = None
         
-        # Generate authorization URL
+        # Generate authorization URL with all required scopes
         auth_params = {
             'client_id': config.client_id,
             'redirect_uri': config.redirect_uri,
@@ -174,30 +230,40 @@ class EmailProviders:
         }
         auth_url = f"{config.setup_url}?{urlencode(auth_params)}"
         
-        # Open browser for authentication
+        logger.logger.debug(f"Opening authorization URL: {auth_url}")
         webbrowser.open(auth_url)
         
         try:
             # Wait for callback
             server.handle_request()
-            auth_code = server.oauth_code
             
-            if not auth_code:
+            # Check for OAuth errors
+            if server.oauth_error:
+                raise ValueError(f"OAuth authentication failed: {server.oauth_error}")
+            
+            if not server.oauth_code:
                 raise ValueError("No authorization code received")
+            
+            logger.logger.debug("Authorization code received, exchanging for tokens")
             
             # Exchange code for tokens
             token_data = {
                 'client_id': config.client_id,
                 'client_secret': config.client_secret,
-                'code': auth_code,
+                'code': server.oauth_code,
                 'redirect_uri': config.redirect_uri,
                 'grant_type': 'authorization_code'
             }
             
             response = requests.post(config.token_url, data=token_data)
-            response.raise_for_status()
+            
+            if not response.ok:
+                error_msg = f"Token exchange failed: {response.status_code} - {response.text}"
+                logger.logger.error(error_msg)
+                raise ValueError(error_msg)
             
             tokens = response.json()
+            logger.logger.debug("Successfully obtained OAuth tokens")
             
             # Store tokens securely
             credential_manager = CredentialManager()
@@ -207,6 +273,7 @@ class EmailProviders:
             
         finally:
             server.server_close()
+            logger.logger.debug("OAuth server closed")
     
     @classmethod
     def refresh_gmail_token(cls, email: str, refresh_token: str) -> Dict:

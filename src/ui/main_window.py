@@ -17,29 +17,64 @@ class MainWindow(QMainWindow):
     """
     
     def __init__(self):
+        """Initialize the main window."""
         super().__init__()
-        self.setWindowTitle(Resources.APP_NAME)
-        self.setMinimumSize(800, 600)
-        self.setWindowIcon(Resources.get_app_icon())
+        logger.logger.debug("Initializing MainWindow")
         
-        # Initialize managers
+        # Initialize configuration
         self.config = Config()
         self.credential_manager = CredentialManager()
-        self.email_manager = None
         
-        # Create the central widget and main layout
-        self.central_widget = QWidget()
-        self.setCentralWidget(self.central_widget)
-        self.layout = QVBoxLayout(self.central_widget)
+        # Set up UI
+        self.setup_ui()
         
-        # Initialize UI components
-        self.setup_menu_bar()
-        self.setup_tabs()
-        
-        # Load accounts into UI
-        self.load_accounts()
+        # Load accounts
+        try:
+            self.load_accounts()
+        except Exception as e:
+            logger.log_error(e, {'context': 'Initial account loading'})
         
         logger.logger.info("MainWindow initialized successfully")
+    
+    def setup_ui(self):
+        """Set up the main window UI components."""
+        logger.logger.debug("Setting up MainWindow UI")
+        
+        # Set window properties
+        self.setWindowTitle("AI Email Assistant")
+        self.setGeometry(100, 100, 1200, 800)
+        
+        # Create central widget and layout
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        layout = QVBoxLayout(central_widget)
+        
+        # Create tab widget
+        self.tab_widget = QTabWidget()
+        layout.addWidget(self.tab_widget)
+        
+        # Create and add tabs
+        self.email_accounts_tab = EmailAccountsTab(self)
+        self.email_analysis_tab = EmailAnalysisTab(self)
+        
+        self.tab_widget.addTab(self.email_accounts_tab, "Email Accounts")
+        self.tab_widget.addTab(self.email_analysis_tab, "Email Analysis")
+        
+        # Connect folder operation signals
+        self.email_accounts_tab.folder_tree.folder_created.connect(self.handle_folder_created)
+        self.email_accounts_tab.folder_tree.folder_deleted.connect(self.handle_folder_deleted)
+        self.email_accounts_tab.folder_tree.folder_renamed.connect(self.handle_folder_renamed)
+        
+        # Connect signals
+        logger.logger.debug("Connecting signals")
+        self.email_accounts_tab.account_added.connect(self.on_account_added)
+        self.email_accounts_tab.account_removed.connect(self.on_account_removed)
+        self.email_accounts_tab.account_updated.connect(self.on_account_updated)
+        
+        # Create menu bar
+        self.create_menu_bar()
+        
+        logger.logger.debug("MainWindow UI setup complete")
     
     def handle_error(self, error_type, error_message):
         """
@@ -55,7 +90,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Error: {error_message}", 5000)
     
     @handle_errors
-    def setup_menu_bar(self):
+    def create_menu_bar(self):
         """Creates the application menu bar with basic options."""
         menu_bar = self.menuBar()
         
@@ -75,39 +110,22 @@ class MainWindow(QMainWindow):
         self.statusBar()
     
     @handle_errors
-    def setup_tabs(self):
-        """Creates the main tab widget with different sections of the application."""
-        self.tab_widget = QTabWidget()
-        
-        # Add tabs for different functionalities
-        self.email_accounts_tab = EmailAccountsTab()
-        self.email_analysis_tab = EmailAnalysisTab()
-        
-        self.tab_widget.addTab(self.email_accounts_tab, "Email Accounts")
-        self.tab_widget.addTab(self.email_analysis_tab, "Email Analysis")
-        
-        self.layout.addWidget(self.tab_widget)
-        
-        # Connect signals
-        self.email_accounts_tab.account_added.connect(self.on_account_added)
-        self.email_accounts_tab.account_removed.connect(self.on_account_removed)
-        self.email_accounts_tab.account_updated.connect(self.on_account_updated)
-        self.email_analysis_tab.account_selector.currentIndexChanged.connect(
-            self.on_account_selected
-        )
-    
-    @handle_errors
     def load_accounts(self):
         """Load configured email accounts into the UI."""
         try:
+            logger.logger.debug("Loading accounts from configuration")
             accounts = self.config.get_accounts()
+            logger.logger.debug(f"Found {len(accounts)} accounts in configuration")
             
             # Update accounts tab
+            logger.logger.debug("Updating accounts tab")
             self.email_accounts_tab.load_accounts(accounts)
             
             # Update account selector in analysis tab
+            logger.logger.debug("Updating account selector in analysis tab")
             self.email_analysis_tab.account_selector.clear()
             for account in accounts:
+                logger.logger.debug(f"Adding account to selector: {account['email']}")
                 self.email_analysis_tab.account_selector.addItem(
                     account['email'],
                     account
@@ -123,7 +141,12 @@ class MainWindow(QMainWindow):
     def on_account_added(self, account_data):
         """Handle new account addition."""
         try:
+            logger.logger.debug(f"Adding new account: {account_data['email']}")
+            logger.logger.debug(f"Account data: {account_data}")
+            
             self.config.add_account(account_data)
+            logger.logger.debug("Account added to configuration")
+            
             self.load_accounts()
             logger.logger.info(f"Added new account: {account_data['email']}")
             self.statusBar().showMessage("Account added successfully", 3000)
@@ -243,3 +266,51 @@ class MainWindow(QMainWindow):
             "An AI-powered email assistant that helps manage emails\n"
             "and generate intelligent replies."
         ) 
+    
+    @handle_errors
+    def handle_folder_created(self, folder_name: str):
+        """Handle folder creation request."""
+        logger.logger.debug(f"Creating folder: {folder_name}")
+        
+        if not self.email_manager.create_folder(folder_name):
+            QMessageBox.warning(
+                self,
+                "Folder Creation Failed",
+                f"Failed to create folder '{folder_name}'. Please try again."
+            )
+            return
+        
+        # Refresh folder list
+        self.email_accounts_tab.refresh_folders()
+    
+    @handle_errors
+    def handle_folder_deleted(self, folder_name: str):
+        """Handle folder deletion request."""
+        logger.logger.debug(f"Deleting folder: {folder_name}")
+        
+        if not self.email_manager.delete_folder(folder_name):
+            QMessageBox.warning(
+                self,
+                "Folder Deletion Failed",
+                f"Failed to delete folder '{folder_name}'. Please try again."
+            )
+            return
+        
+        # Refresh folder list
+        self.email_accounts_tab.refresh_folders()
+    
+    @handle_errors
+    def handle_folder_renamed(self, old_name: str, new_name: str):
+        """Handle folder renaming request."""
+        logger.logger.debug(f"Renaming folder from {old_name} to {new_name}")
+        
+        if not self.email_manager.rename_folder(old_name, new_name):
+            QMessageBox.warning(
+                self,
+                "Folder Rename Failed",
+                f"Failed to rename folder from '{old_name}' to '{new_name}'. Please try again."
+            )
+            return
+        
+        # Refresh folder list
+        self.email_accounts_tab.refresh_folders() 

@@ -22,9 +22,12 @@ class Config:
         # Create application directory if it doesn't exist
         self.app_dir.mkdir(exist_ok=True)
         
+        # Initialize accounts list
+        self.accounts = []
+        
         # Load or create configuration files
         self.settings = self._load_settings()
-        self.accounts = self._load_accounts()
+        self._load_accounts()  # Load accounts into self.accounts
         
         logger.logger.info("Configuration initialized")
     
@@ -57,23 +60,30 @@ class Config:
             logger.log_error(e, {'context': 'Saving settings'})
     
     def _load_accounts(self):
-        """Load email accounts from file."""
+        """Load accounts from file."""
         if self.accounts_file.exists():
             try:
+                logger.logger.debug(f"Loading accounts from {self.accounts_file}")
                 with open(self.accounts_file, "r") as f:
-                    return json.load(f)
+                    self.accounts = json.load(f)
+                logger.logger.debug(f"Loaded {len(self.accounts)} accounts")
             except Exception as e:
                 logger.log_error(e, {'context': 'Loading accounts'})
-                return []
-        return []
+                self.accounts = []
+        else:
+            logger.logger.debug("No accounts file found, starting with empty list")
+            self.accounts = []
     
     def _save_accounts(self):
-        """Save email accounts to file."""
+        """Save accounts to file."""
         try:
+            logger.logger.debug(f"Saving {len(self.accounts)} accounts to {self.accounts_file}")
             with open(self.accounts_file, "w") as f:
                 json.dump(self.accounts, f, indent=4)
+            logger.logger.debug("Accounts saved successfully")
         except Exception as e:
             logger.log_error(e, {'context': 'Saving accounts'})
+            raise
     
     def get_accounts(self):
         """
@@ -82,6 +92,7 @@ class Config:
         Returns:
             list: List of account configurations
         """
+        logger.logger.debug(f"Returning {len(self.accounts)} accounts")
         return self.accounts
     
     def add_account(self, account_data):
@@ -91,6 +102,7 @@ class Config:
         Args:
             account_data (dict): Email account configuration
         """
+        logger.logger.debug(f"Adding account: {account_data['email']}")
         self.accounts.append(account_data)
         self._save_accounts()
         logger.logger.info(f"Added account: {account_data['email']}")

@@ -1,13 +1,25 @@
 #!/usr/bin/env python3
 
 import sys
+import os
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QTimer
+from dotenv import load_dotenv
 from ui.main_window import MainWindow
 from ui.splash_screen import SplashScreen
 from resources import Resources
 from utils.logger import logger
 from utils.error_handler import error_handler, handle_errors
+
+# Load environment variables
+load_dotenv()
+
+# Verify environment variables
+logger.logger.info("Checking environment variables...")
+client_id = os.getenv("GOOGLE_CLIENT_ID")
+client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
+logger.logger.info(f"GOOGLE_CLIENT_ID present: {bool(client_id)}")
+logger.logger.info(f"GOOGLE_CLIENT_SECRET present: {bool(client_secret)}")
 
 @handle_errors
 def initialize_app():
