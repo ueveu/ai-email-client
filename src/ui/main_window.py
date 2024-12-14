@@ -67,6 +67,7 @@ class MainWindow(QMainWindow):
         # Connect signals
         self.email_accounts_tab.account_added.connect(self.on_account_added)
         self.email_accounts_tab.account_removed.connect(self.on_account_removed)
+        self.email_accounts_tab.account_updated.connect(self.on_account_updated)
         self.email_analysis_tab.account_selector.currentIndexChanged.connect(
             self.on_account_selected
         )
@@ -95,6 +96,39 @@ class MainWindow(QMainWindow):
         """Handle account removal."""
         self.config.remove_account(email)
         self.credential_manager.delete_email_credentials(email)
+        self.load_accounts()
+        
+        # If the removed account was selected, clear the email manager
+        if self.email_manager and self.email_manager.account_data['email'] == email:
+            self.email_manager = None
+            self.email_analysis_tab.set_email_manager(None)
+    
+    def on_account_updated(self, email, account_data):
+        """
+        Handle account updates.
+        
+        Args:
+            email (str): Original email address of the account
+            account_data (dict): Updated account configuration
+        """
+        # Update the configuration
+        self.config.update_account(email, account_data)
+        
+        # If the updated account is currently selected, update the email manager
+        if (self.email_manager and 
+            self.email_manager.account_data['email'] == email):
+            # Get credentials for the updated account
+            credentials = self.credential_manager.get_email_credentials(account_data['email'])
+            if credentials and 'password' in credentials:
+                # Create new account data with password
+                account_with_password = account_data.copy()
+                account_with_password['password'] = credentials['password']
+                
+                # Create new email manager with updated settings
+                self.email_manager = EmailManager(account_with_password)
+                self.email_analysis_tab.set_email_manager(self.email_manager)
+        
+        # Reload all accounts to update the UI
         self.load_accounts()
     
     def on_account_selected(self, index):
