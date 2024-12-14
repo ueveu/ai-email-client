@@ -12,6 +12,36 @@ class ApiKeyDialog(QDialog):
     
     API_URL = "https://makersuite.google.com/app/apikey"
     
+    @classmethod
+    def show_instruction_dialog(cls, parent=None):
+        """Show instructions about getting a Gemini API key."""
+        msg = QMessageBox(parent)
+        msg.setWindowTitle("Welcome to AI Email Assistant")
+        msg.setIcon(QMessageBox.Icon.Information)
+        
+        # Set detailed instructions
+        instructions = (
+            "<h3>Welcome to AI Email Assistant!</h3>"
+            "<p>To use the AI features of this application, you need a Google Gemini API key.</p>"
+            "<p><b>How to get your API key:</b></p>"
+            "<ol>"
+            "<li>Visit the <a href='https://makersuite.google.com/app/apikey'>Google AI Studio</a></li>"
+            "<li>Sign in with your Google account</li>"
+            "<li>Click on 'Create API Key'</li>"
+            "<li>Copy your new API key</li>"
+            "</ol>"
+            "<p>The API key will be stored securely on your system.</p>"
+        )
+        
+        msg.setText(instructions)
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        
+        # Make the dialog wider
+        msg.setMinimumWidth(400)
+        
+        return msg.exec()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Gemini API Key Required")

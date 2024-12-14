@@ -22,6 +22,7 @@ class EmailManager:
         self.account_data = account_data
         self.imap_connection = None
         self.smtp_connection = None
+        self._current_folder = "INBOX"
     
     def connect_imap(self):
         """
@@ -187,3 +188,169 @@ class EmailManager:
                 self.smtp_connection.quit()
             except:
                 pass 
+    
+    def get_folders(self) -> list:
+        """
+        Get list of available email folders.
+        
+        Returns:
+            list: List of folder names and their hierarchical structure
+        """
+        if not self.imap_connection:
+            if not self.connect_imap():
+                return []
+        
+        try:
+            # List all folders
+            response = self.imap_connection.list()
+            folders = []
+            
+            for folder_data in response[1]:
+                # Parse folder data
+                flags, delimiter, name = self.imap_connection.list_response(folder_data)
+                
+                # Convert folder name from bytes to string if needed
+                if isinstance(name, bytes):
+                    name = name.decode()
+                
+                # Create folder info dictionary
+                folder_info = {
+                    "name": name,
+                    "flags": flags,
+                    "has_children": "\\HasChildren" in flags,
+                    "selectable": "\\Noselect" not in flags
+                }
+                folders.append(folder_info)
+            
+            return folders
+        except Exception as e:
+            print(f"Error getting folders: {str(e)}")
+            return []
+    
+    def select_folder(self, folder_name: str) -> bool:
+        """
+        Select an email folder to work with.
+        
+        Args:
+            folder_name (str): Name of the folder to select
+        
+        Returns:
+            bool: True if folder was selected successfully
+        """
+        if not self.imap_connection:
+            if not self.connect_imap():
+                return False
+        
+        try:
+            result = self.imap_connection.select(folder_name)
+            if result[0] == "OK":
+                self._current_folder = folder_name
+                return True
+            return False
+        except Exception as e:
+            print(f"Error selecting folder: {str(e)}")
+            return False
+    
+    def create_folder(self, folder_name: str) -> bool:
+        """
+        Create a new email folder.
+        
+        Args:
+            folder_name (str): Name of the folder to create
+        
+        Returns:
+            bool: True if folder was created successfully
+        """
+        if not self.imap_connection:
+            if not self.connect_imap():
+                return False
+        
+        try:
+            result = self.imap_connection.create(folder_name)
+            return result[0] == "OK"
+        except Exception as e:
+            print(f"Error creating folder: {str(e)}")
+            return False
+    
+    def delete_folder(self, folder_name: str) -> bool:
+        """
+        Delete an email folder.
+        
+        Args:
+            folder_name (str): Name of the folder to delete
+        
+        Returns:
+            bool: True if folder was deleted successfully
+        """
+        if not self.imap_connection:
+            if not self.connect_imap():
+                return False
+        
+        try:
+            result = self.imap_connection.delete(folder_name)
+            return result[0] == "OK"
+        except Exception as e:
+            print(f"Error deleting folder: {str(e)}")
+            return False
+    
+    def rename_folder(self, old_name: str, new_name: str) -> bool:
+        """
+        Rename an email folder.
+        
+        Args:
+            old_name (str): Current folder name
+            new_name (str): New folder name
+        
+        Returns:
+            bool: True if folder was renamed successfully
+        """
+        if not self.imap_connection:
+            if not self.connect_imap():
+                return False
+        
+        try:
+            result = self.imap_connection.rename(old_name, new_name)
+            return result[0] == "OK"
+        except Exception as e:
+            print(f"Error renaming folder: {str(e)}")
+            return False
+    
+    def get_folder_status(self, folder_name: str) -> dict:
+        """
+        Get status information for a folder.
+        
+        Args:
+            folder_name (str): Name of the folder
+        
+        Returns:
+            dict: Folder status information (message count, unread count, etc.)
+        """
+        if not self.imap_connection:
+            if not self.connect_imap():
+                return {}
+        
+        try:
+            result = self.imap_connection.status(
+                folder_name,
+                "(MESSAGES RECENT UIDNEXT UIDVALIDITY UNSEEN)"
+            )
+            
+            if result[0] == "OK":
+                # Parse status response
+                status_data = result[1][0].decode()
+                status = {}
+                
+                # Extract values using string manipulation
+                # Example format: "folder_name (MESSAGES 123 RECENT 0 UIDNEXT 1234 ...)"
+                parts = status_data.split("(")[1].strip(")").split()
+                
+                for i in range(0, len(parts), 2):
+                    key = parts[i].lower()
+                    value = int(parts[i + 1])
+                    status[key] = value
+                
+                return status
+            return {}
+        except Exception as e:
+            print(f"Error getting folder status: {str(e)}")
+            return {} 

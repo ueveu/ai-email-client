@@ -56,4 +56,24 @@ class Config:
     def set(self, key, value):
         """Set a configuration value."""
         self.settings[key] = value
-        self._save_settings(self.settings) 
+        self._save_settings(self.settings)
+    
+    def get_api_key(self, provider: str) -> str:
+        """Get API key for a provider."""
+        return self.settings.get("providers", {}).get(provider, {}).get("api_key")
+    
+    def set_api_key(self, api_key: str, provider: str):
+        """Set API key for a provider."""
+        if "providers" not in self.settings:
+            self.settings["providers"] = {}
+        if provider not in self.settings["providers"]:
+            self.settings["providers"][provider] = {}
+        self.settings["providers"][provider]["api_key"] = api_key
+        self._save_settings(self.settings)
+    
+    def clear_api_key(self, provider: str):
+        """Clear API key for a provider."""
+        if "providers" in self.settings and provider in self.settings["providers"]:
+            if "api_key" in self.settings["providers"][provider]:
+                del self.settings["providers"][provider]["api_key"]
+                self._save_settings(self.settings) 

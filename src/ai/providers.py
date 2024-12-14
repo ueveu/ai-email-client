@@ -268,12 +268,12 @@ class GeminiProvider(AIProvider):
             DropdownSetting(
                 name="model_name",
                 display_name="Model",
-                default_value="gemini-1.5-flash-latest",
+                default_value="gemini-1.5-flash-8b",
                 description="Select Gemini model to use",
                 options=[
-                    ("Gemini 1.5 Flash 8B (fast)", "gemini-1.5-flash-8b-latest"),
-                    ("Gemini 1.5 Flash (fast & more intelligent, recommended)", "gemini-1.5-flash-latest"),
-                    ("Gemini 1.5 Pro (very intelligent, but slower & lower rate limit)", "gemini-1.5-pro-latest")
+                    ("Gemini 1.5 Flash 8B (fast)", "gemini-1.5-flash-8b"),
+                    ("Gemini 1.5 Flash (fast & more intelligent, recommended)", "gemini-1.5-flash"),
+                    ("Gemini 1.5 Pro (very intelligent, but slower & lower rate limit)", "gemini-1.5-pro")
                 ]
             )
         ]
@@ -320,14 +320,7 @@ class GeminiProvider(AIProvider):
             
             # Try to create model
             api_key_setting.update_progress(33, "Creating model...")
-            model = genai.GenerativeModel(
-                model_name="gemini-1.5-flash-latest",
-                generation_config=genai.types.GenerationConfig(
-                    candidate_count=1,
-                    max_output_tokens=1000,
-                    temperature=0.5
-                )
-            )
+            model = genai.GenerativeModel('gemini-1.5-flash-8b')
             
             # Try a test request
             api_key_setting.update_progress(66, "Testing connection...")
@@ -370,7 +363,7 @@ class GeminiProvider(AIProvider):
                     generation_config=genai.types.GenerationConfig(
                         candidate_count=1,
                         max_output_tokens=1000,
-                        temperature=0.5
+                        temperature=0.7
                     ),
                     safety_settings={
                         HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
@@ -398,20 +391,16 @@ class GeminiProvider(AIProvider):
     def after_load(self):
         """Initialize Gemini model after loading settings."""
         try:
-            # Validate API key first
-            error = self.validate_settings()
-            if error:
-                logging.error(f"Error validating settings: {error}")
-                self.model = None
-                return
-                
+            # Configure Gemini with API key
+            genai.configure(api_key=self.api_key)
+            
             # Initialize model
             self.model = genai.GenerativeModel(
                 model_name=self.model_name,
                 generation_config=genai.types.GenerationConfig(
                     candidate_count=1,
                     max_output_tokens=1000,
-                    temperature=0.5
+                    temperature=0.7
                 ),
                 safety_settings={
                     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,

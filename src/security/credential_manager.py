@@ -129,9 +129,22 @@ class CredentialManager:
             encrypted_key = keyring.get_password(self.API_SERVICE, api_name)
             if encrypted_key:
                 return self._fernet.decrypt(encrypted_key.encode()).decode()
+            return None
         except Exception as e:
             print(f"Error retrieving API key: {str(e)}")
-        return None
+            return None
+    
+    def clear_api_key(self, api_name: str):
+        """
+        Clear the stored API key.
+        
+        Args:
+            api_name (str): Name of the API to clear
+        """
+        try:
+            keyring.delete_password(self.API_SERVICE, api_name)
+        except keyring.errors.PasswordDeleteError:
+            pass  # Key doesn't exist, which is fine
     
     def delete_api_key(self, api_name: str):
         """

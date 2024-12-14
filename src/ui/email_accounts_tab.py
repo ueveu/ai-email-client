@@ -104,8 +104,8 @@ class EmailAccountsTab(QWidget):
         account_frame.setFrameShape(QFrame.Shape.StyledPanel)
         account_frame.setStyleSheet("""
             QFrame {
-                background-color: white;
-                border: 1px solid #ddd;
+                background-color: #2d2d2d;
+                border: 1px solid #3d3d3d;
                 border-radius: 4px;
                 padding: 10px;
             }
@@ -116,12 +116,20 @@ class EmailAccountsTab(QWidget):
         # Account info
         info_layout = QVBoxLayout()
         
-        email_label = QLabel(account["email"])
-        email_label.setStyleSheet("font-weight: bold; font-size: 14px;")
+        # Email and name
+        email_label = QLabel(f"{account['name']} <{account['email']}>")
+        email_label.setStyleSheet("color: white; font-weight: bold; font-size: 14px;")
         info_layout.addWidget(email_label)
         
-        server_label = QLabel(f"{account['server']} ({account['protocol']})")
-        server_label.setStyleSheet("color: #666; font-size: 12px;")
+        # Server info
+        server_info = []
+        if account.get('imap_server'):
+            server_info.append(f"IMAP: {account['imap_server']}:{account['imap_port']}")
+        if account.get('smtp_server'):
+            server_info.append(f"SMTP: {account['smtp_server']}:{account['smtp_port']}")
+        
+        server_label = QLabel(" | ".join(server_info))
+        server_label.setStyleSheet("color: #aaa; font-size: 12px;")
         info_layout.addWidget(server_label)
         
         layout.addLayout(info_layout)
