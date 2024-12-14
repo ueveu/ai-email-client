@@ -15,6 +15,7 @@ The AI Email Assistant is a standalone desktop application built using Python an
 - Python 3.x
 - PyQt6
 - Thunderbird (for extension integration)
+- Google Gemini API Key (get it from [Google AI Studio](https://makersuite.google.com/app/apikey))
 
 ### Installation
 1. Clone the repository:
@@ -29,6 +30,11 @@ The AI Email Assistant is a standalone desktop application built using Python an
    ```bash
    pip install -r requirements.txt
    ```
+4. Set up environment variables:
+   ```bash
+   cp .env.template .env
+   ```
+   Then edit `.env` and add your Gemini API key. Never commit this file to version control!
 
 ### Running the Application
 1. Start the desktop application:
@@ -36,6 +42,11 @@ The AI Email Assistant is a standalone desktop application built using Python an
    python src/main.py
    ```
 2. Follow the on-screen instructions to add email accounts and generate AI replies.
+
+## Security Notes
+- The `.env` file contains sensitive information and is excluded from version control.
+- Never commit your API keys or email credentials to the repository.
+- The application stores email credentials securely using system keyring.
 
 ## Thunderbird Extension
 - The extension allows users to access the AI assistant's features directly within Thunderbird.
