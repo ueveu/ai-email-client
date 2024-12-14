@@ -48,84 +48,93 @@ class FolderTree(QTreeWidget):
         # Style the tree
         self.setStyleSheet("""
             QTreeWidget {
-                border: 1px solid #ddd;
-                border-radius: 4px;
-                padding: 4px;
+                border: none;
+                background-color: transparent;
             }
             QTreeWidget::item {
                 padding: 4px;
-                border-bottom: 1px solid #f0f0f0;
+            }
+            QTreeWidget::item:hover {
+                background-color: rgba(0, 0, 0, 0.05);
             }
             QTreeWidget::item:selected {
-                background-color: #e3f2fd;
-                color: #1976D2;
+                background-color: rgba(0, 0, 0, 0.1);
             }
         """)
         
         # Connect signals
-        self.itemClicked.connect(self._on_item_clicked)
-        self.itemExpanded.connect(self._on_item_expanded)
-        self.itemCollapsed.connect(self._on_item_collapsed)
-        
-        # Set up context menu
+        self.itemClicked.connect(self.on_folder_clicked)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.customContextMenuRequested.connect(self._show_context_menu)
+        self.customContextMenuRequested.connect(self.show_context_menu)
     
-    @handle_errors
-    def update_folders(self, folders, status_data=None):
-        """
-        Update the folder tree with the latest folder list and status.
+    def show_context_menu(self, position):
+        """Show context menu for folder operations."""
+        item = self.itemAt(position)
+        if not item:
+            # Right-click on empty space - show only create folder option
+            menu = QMenu(self)
+            create_action = menu.addAction("Create Folder")
+            create_action.triggered.connect(lambda: self.create_folder())
+            menu.exec(self.mapToGlobal(position))
+            return
         
-        Args:
-            folders (list): List of folder dictionaries from EmailManager
-            status_data (dict): Optional dict mapping folder names to their status
-        """
-        # Remember expanded and selected states
-        expanded_folders = {item.text(0) for item in self.folder_items.values() 
-                          if item.isExpanded()}
-        selected_folder = self.currentItem().text(0) if self.currentItem() else None
+        folder_name = item.text(0)
+        menu = QMenu(self)
         
-        self.clear()
-        self.folder_items = {}
+        # Don't allow modification of special folders
+        is_special = folder_name in self.SPECIAL_FOLDERS
         
-        # Create root folders first
-        root_items = {}
-        for folder in folders:
-            path_parts = folder['name'].split('/')
+        create_action = menu.addAction("Create Subfolder")
+        create_action.triggered.connect(lambda: self.create_folder(parent_folder=folder_name))
+        
+        if not is_special:
+            rename_action = menu.addAction("Rename Folder")
+            rename_action.triggered.connect(lambda: self.rename_folder(folder_name))
             
-            # Create or get the root item
-            if len(path_parts) > 1:
-                root_name = path_parts[0]
-                if root_name not in root_items:
-                    root_items[root_name] = self._create_folder_item(root_name)
-                    self.addTopLevelItem(root_items[root_name])
-            
-            # Create the folder item
-            if len(path_parts) > 1:
-                # This is a subfolder
-                item = self._create_folder_item(path_parts[-1])
-                root_items[path_parts[0]].addChild(item)
-            else:
-                # This is a root folder
-                item = self._create_folder_item(folder['name'])
-                self.addTopLevelItem(item)
-            
-            # Store reference to the item
-            self.folder_items[folder['name']] = item
-            
-            # Update status if provided
-            if status_data and folder['name'] in status_data:
-                self.update_folder_status(folder['name'], status_data[folder['name']])
+            delete_action = menu.addAction("Delete Folder")
+            delete_action.triggered.connect(lambda: self.delete_folder(folder_name))
         
-        # Restore expanded states
-        for folder in expanded_folders:
-            if folder in self.folder_items:
-                self.folder_items[folder].setExpanded(True)
+        menu.exec(self.mapToGlobal(position))
+    
+    def create_folder(self, parent_folder=None):
+        """Create a new folder, optionally as a subfolder of parent_folder."""
+        dialog_title = "Create Subfolder" if parent_folder else "Create Folder"
+        folder_name, ok = QInputDialog.getText(self, dialog_title, "Enter folder name:")
         
-        # Restore selection
-        if selected_folder and selected_folder in self.folder_items:
-            self.folder_items[selected_folder].setSelected(True)
-            self.scrollToItem(self.folder_items[selected_folder])
+        if ok and folder_name:
+            # If parent folder is specified, create a hierarchical name
+            full_name = f"{parent_folder}/{folder_name}" if parent_folder else folder_name
+            self.folder_created.emit(full_name)
+    
+    def rename_folder(self, folder_name):
+        """Rename an existing folder."""
+        new_name, ok = QInputDialog.getText(
+            self, "Rename Folder", 
+            "Enter new folder name:",
+            text=folder_name
+        )
+        
+        if ok and new_name and new_name != folder_name:
+            self.folder_renamed.emit(folder_name, new_name)
+    
+    def delete_folder(self, folder_name):
+        """Delete a folder after confirmation."""
+        reply = QMessageBox.question(
+            self,
+            "Delete Folder",
+            f"Are you sure you want to delete the folder '{folder_name}'?\nThis cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            self.folder_deleted.emit(folder_name)
+    
+    def on_folder_clicked(self, item, column):
+        """Handle folder selection."""
+        folder_name = item.text(0)
+        self.selected_folder = folder_name
+        self.folder_selected.emit(folder_name)
     
     def _create_folder_item(self, folder_name):
         """Create a styled tree item for a folder."""
@@ -173,107 +182,6 @@ class FolderTree(QTreeWidget):
                 item.setFont(0, font)
                 item.setForeground(1, QBrush(QColor('#666666')))  # Gray for no unread
     
-    @handle_errors
-    def _show_context_menu(self, position):
-        """Show context menu for folder operations."""
-        item = self.itemAt(position)
-        if not item:
-            return
-        
-        menu = QMenu(self)
-        
-        # Add folder operations
-        create_subfolder = menu.addAction("Create Subfolder")
-        rename_folder = menu.addAction("Rename Folder")
-        delete_folder = menu.addAction("Delete Folder")
-        
-        # Disable operations for special folders
-        folder_name = item.text(0).split()[-1]  # Remove icon if present
-        is_special = folder_name in self.SPECIAL_FOLDERS
-        
-        rename_folder.setEnabled(not is_special)
-        delete_folder.setEnabled(not is_special)
-        
-        # Show menu and handle selection
-        action = menu.exec(self.mapToGlobal(position))
-        
-        if action == create_subfolder:
-            self._create_subfolder(item)
-        elif action == rename_folder:
-            self._rename_folder(item)
-        elif action == delete_folder:
-            self._delete_folder(item)
-    
-    @handle_errors
-    def _create_subfolder(self, parent_item):
-        """Create a new subfolder under the selected folder."""
-        name, ok = QInputDialog.getText(
-            self, 
-            "Create Subfolder",
-            "Enter subfolder name:"
-        )
-        
-        if ok and name:
-            parent_path = parent_item.text(0).split()[-1]  # Remove icon if present
-            new_folder = f"{parent_path}/{name}"
-            
-            # Create new item
-            new_item = self._create_folder_item(name)
-            parent_item.addChild(new_item)
-            parent_item.setExpanded(True)
-            
-            # Store reference and emit signal
-            self.folder_items[new_folder] = new_item
-            self.folder_created.emit(new_folder)
-    
-    @handle_errors
-    def _rename_folder(self, item):
-        """Rename the selected folder."""
-        old_name = item.text(0).split()[-1]  # Remove icon if present
-        
-        name, ok = QInputDialog.getText(
-            self,
-            "Rename Folder",
-            "Enter new folder name:",
-            text=old_name
-        )
-        
-        if ok and name and name != old_name:
-            # Update item
-            item.setText(0, name)
-            
-            # Update folder items mapping
-            self.folder_items[name] = self.folder_items.pop(old_name)
-            
-            # Emit signal
-            self.folder_renamed.emit(old_name, name)
-    
-    @handle_errors
-    def _delete_folder(self, item):
-        """Delete the selected folder."""
-        folder_name = item.text(0).split()[-1]  # Remove icon if present
-        
-        reply = QMessageBox.question(
-            self,
-            "Confirm Deletion",
-            f"Are you sure you want to delete the folder '{folder_name}'?\n"
-            "All messages in this folder will be moved to Trash.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
-        )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            # Remove item from tree
-            parent = item.parent()
-            if parent:
-                parent.removeChild(item)
-            else:
-                self.takeTopLevelItem(self.indexOfTopLevelItem(item))
-            
-            # Remove from folder items and emit signal
-            del self.folder_items[folder_name]
-            self.folder_deleted.emit(folder_name)
-    
     def _on_item_clicked(self, item, column):
         """Handle folder selection."""
         folder_name = item.text(0).split()[-1]  # Remove icon if present
@@ -287,3 +195,58 @@ class FolderTree(QTreeWidget):
     def _on_item_collapsed(self, item):
         """Track collapsed state of folders."""
         self.expanded_folders.discard(item.text(0)) 
+    
+    def update_folders(self, folders):
+        """
+        Update the folder tree with the latest folder list.
+        
+        Args:
+            folders (list): List of folder dictionaries from EmailManager
+        """
+        logger.logger.debug(f"Updating folder tree with {len(folders)} folders")
+        
+        # Remember expanded and selected states
+        expanded_folders = {item.text(0).split()[-1] for item in self.folder_items.values() 
+                          if item.isExpanded()}
+        selected_folder = self.selected_folder
+        
+        # Clear current items
+        self.clear()
+        self.folder_items = {}
+        
+        # Create root folders first
+        root_items = {}
+        for folder in folders:
+            path_parts = folder['name'].split('/')
+            
+            # Create or get the root item
+            if len(path_parts) > 1:
+                root_name = path_parts[0]
+                if root_name not in root_items:
+                    root_items[root_name] = self._create_folder_item(root_name)
+                    self.addTopLevelItem(root_items[root_name])
+            
+            # Create the folder item
+            if len(path_parts) > 1:
+                # This is a subfolder
+                item = self._create_folder_item(path_parts[-1])
+                root_items[path_parts[0]].addChild(item)
+            else:
+                # This is a root folder
+                item = self._create_folder_item(folder['name'])
+                self.addTopLevelItem(item)
+            
+            # Store reference to the item
+            self.folder_items[folder['name']] = item
+        
+        # Restore expanded states
+        for folder in expanded_folders:
+            if folder in self.folder_items:
+                self.folder_items[folder].setExpanded(True)
+        
+        # Restore selection
+        if selected_folder and selected_folder in self.folder_items:
+            self.folder_items[selected_folder].setSelected(True)
+            self.scrollToItem(self.folder_items[selected_folder])
+        
+        logger.logger.debug("Folder tree update complete")

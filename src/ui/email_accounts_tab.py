@@ -4,6 +4,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QPushButton,
 from PyQt6.QtCore import pyqtSignal
 from ui.email_account_dialog import EmailAccountDialog
 from utils.logger import logger
+from utils.error_handler import handle_errors
+from security.credential_manager import CredentialManager
 
 class EmailAccountsTab(QWidget):
     """
@@ -15,9 +17,10 @@ class EmailAccountsTab(QWidget):
     account_removed = pyqtSignal(str)  # Emitted when account is removed (email)
     account_updated = pyqtSignal(str, dict)  # Emitted when account is updated (email, data)
     
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.accounts = []  # List of account data dictionaries
+        self.parent = parent  # Store reference to main window
         self.setup_ui()
     
     def setup_ui(self):
@@ -66,10 +69,12 @@ class EmailAccountsTab(QWidget):
         Args:
             accounts (list): List of account data dictionaries
         """
+        logger.logger.debug(f"Loading {len(accounts)} accounts into table")
         self.accounts = accounts
         self.accounts_table.setRowCount(0)
         
         for account in accounts:
+            logger.logger.debug(f"Adding account to table: {account['email']}")
             row = self.accounts_table.rowCount()
             self.accounts_table.insertRow(row)
             
@@ -80,6 +85,7 @@ class EmailAccountsTab(QWidget):
             self.accounts_table.setItem(row, 2, QTableWidgetItem("Connected"))  # TODO: Check actual status
         
         self.accounts_table.resizeColumnsToContents()
+        logger.logger.debug("Finished loading accounts into table")
     
     def add_account(self):
         """Opens dialog to add a new email account."""
@@ -166,3 +172,30 @@ class EmailAccountsTab(QWidget):
         has_selection = len(self.accounts_table.selectedItems()) > 0
         self.edit_account_btn.setEnabled(has_selection)
         self.remove_account_btn.setEnabled(has_selection)
+    
+    @handle_errors
+    def refresh_folders(self):
+        """Refresh the folder list in the folder tree."""
+        if hasattr(self, 'folder_tree'):
+            folders = self.parent.email_manager.list_folders()
+            self.folder_tree.update_folders(folders)
+    
+    @handle_errors
+    def on_account_selection_changed(self):
+        """Update folder tree when account selection changes."""
+        selected_items = self.accounts_table.selectedItems()
+        if not selected_items:
+            # Clear folder tree if no account selected
+            self.folder_tree.clear()
+            return
+        
+        # Get selected account email
+        email = selected_items[0].text()
+        account_data = next((acc for acc in self.accounts if acc['email'] == email), None)
+        if not account_data:
+            return
+        
+        # Update folder tree if email manager exists
+        if hasattr(self.parent, 'email_manager'):
+            folders = self.parent.email_manager.list_folders()
+            self.folder_tree.update_folders(folders)
