@@ -7,6 +7,7 @@ from ui.email_analysis_tab import EmailAnalysisTab
 from ui.settings_dialog import SettingsDialog
 from resources import Resources
 from config import Config
+from ai.providers import GeminiProvider
 import os
 import sys
 import google.generativeai as genai
@@ -31,6 +32,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("AI Email Assistant")
         self.setMinimumSize(800, 600)
         self.setWindowIcon(Resources.get_icon("app_icon.png"))
+        
+        # Initialize AI provider
+        self.ai_provider = GeminiProvider(self)
         
         # Set dark theme
         self.setStyleSheet("""
@@ -129,7 +133,7 @@ class MainWindow(QMainWindow):
         # Create tab widget
         self.tab_widget = QTabWidget()
         self.email_accounts_tab = EmailAccountsTab()
-        self.email_analysis_tab = EmailAnalysisTab()
+        self.email_analysis_tab = EmailAnalysisTab(self.ai_provider)
         
         self.tab_widget.addTab(self.email_accounts_tab, "Email Accounts")
         self.tab_widget.addTab(self.email_analysis_tab, "Email Analysis")

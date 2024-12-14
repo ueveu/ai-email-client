@@ -66,8 +66,14 @@
   - ✅ Implement key validation before saving
   - ✅ Add retry mechanism for failed API calls
   - ✅ Improve error messages and user feedback
-- ⏳ Implement basic reply generation
-- ⏳ Create sentiment analysis functionality
+- ✅ Implement basic reply generation
+  - ✅ Create reply generator class
+  - ✅ Add support for conversation context
+  - ✅ Implement multiple suggestion handling
+- ✅ Create sentiment analysis functionality
+  - ✅ Add sentiment analysis to reply generator
+  - ✅ Integrate with email analysis UI
+  - ✅ Add sentiment display in UI
 - 📅 Implement conversation history analysis
 - 📅 Add tone adjustment options
 - 📅 Implement multiple reply suggestions
@@ -213,17 +219,17 @@
 
 ## Current Focus
 Currently working on:
-- Implementing email account management functionality
-- Setting up basic reply generation with Gemini
-- Adding sentiment analysis for emails
-- Fixing UI issues and improving error handling
+- Testing and improving email reply generation
+- Enhancing sentiment analysis accuracy
+- Implementing email search functionality
+- Adding email caching for offline access
 
 ## Immediate Next Steps
-1. Fix email accounts tab display issues
-2. Implement basic email reply generation
-3. Add sentiment analysis for incoming emails
-4. Improve error handling for email operations
-5. Add loading indicators for AI operations
+1. Add conversation history support to reply generation
+2. Implement email search functionality
+3. Add email caching for offline access
+4. Add tone adjustment options for replies
+5. Improve error handling and recovery
 
 ## Notes
 - Update this file after completing each task
