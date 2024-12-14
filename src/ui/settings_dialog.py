@@ -5,7 +5,7 @@ Settings dialog for configuring application preferences and options.
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
                            QWidget, QLabel, QComboBox, QCheckBox, QSpinBox,
                            QPushButton, QGroupBox, QFormLayout, QDialogButtonBox,
-                           QLineEdit, QScrollArea)
+                           QLineEdit, QScrollArea, QColorDialog, QFileDialog)
 from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtGui import QColor
 import json
@@ -13,6 +13,7 @@ from pathlib import Path
 from utils.logger import logger
 from services.credential_service import CredentialService
 from services.ai_service import AIService
+from services.theme_service import ThemeService
 
 class SettingsDialog(QDialog):
     """Dialog for managing application settings and preferences."""
@@ -22,8 +23,14 @@ class SettingsDialog(QDialog):
         self.settings = QSettings('AI Email Assistant', 'Settings')
         self.credential_service = CredentialService()
         self.ai_service = AIService()
+        self.theme_service = ThemeService()
         self.setup_ui()
         self.load_settings()
+        
+        # Connect theme change signals
+        self.theme_combo.currentTextChanged.connect(self._on_theme_changed)
+        self.custom_colors.toggled.connect(self._on_custom_colors_toggled)
+        self.accent_color.clicked.connect(self._choose_accent_color)
     
     def setup_ui(self):
         """Set up the settings dialog UI."""
@@ -125,9 +132,22 @@ class SettingsDialog(QDialog):
         self.accent_color.setEnabled(False)
         self.custom_colors.toggled.connect(self.accent_color.setEnabled)
         
+        # Theme import/export
+        theme_buttons = QHBoxLayout()
+        
+        import_theme_btn = QPushButton("Import Theme")
+        import_theme_btn.clicked.connect(self._import_theme)
+        
+        export_theme_btn = QPushButton("Export Theme")
+        export_theme_btn.clicked.connect(self._export_theme)
+        
+        theme_buttons.addWidget(import_theme_btn)
+        theme_buttons.addWidget(export_theme_btn)
+        
         theme_layout.addRow("Theme:", self.theme_combo)
         theme_layout.addRow(self.custom_colors)
         theme_layout.addRow("Accent color:", self.accent_color)
+        theme_layout.addRow(theme_buttons)
         theme_group.setLayout(theme_layout)
         layout.addWidget(theme_group)
         
@@ -327,8 +347,21 @@ class SettingsDialog(QDialog):
         self.cache_days.setValue(self.settings.value('cache/retention_days', 30, int))
         
         # Appearance settings
-        self.theme_combo.setCurrentText(self.settings.value('appearance/theme', 'System'))
-        self.custom_colors.setChecked(self.settings.value('appearance/custom_colors', False, bool))
+        current_theme = self.theme_service.get_current_theme()
+        self.theme_combo.setCurrentText(current_theme)
+        
+        custom_colors = self.settings.value('appearance/custom_colors', False, bool)
+        self.custom_colors.setChecked(custom_colors)
+        
+        if custom_colors:
+            colors = self.settings.value('appearance/custom_colors_scheme', {})
+            if 'highlight' in colors:
+                self.accent_color.setStyleSheet(
+                    f"background-color: {colors['highlight']};"
+                    f"min-width: 60px;"
+                    f"min-height: 20px;"
+                )
+        
         self.font_size.setValue(self.settings.value('appearance/font_size', 10, int))
         
         # AI settings
@@ -359,8 +392,14 @@ class SettingsDialog(QDialog):
             self.settings.setValue('cache/retention_days', self.cache_days.value())
             
             # Appearance settings
-            self.settings.setValue('appearance/theme', self.theme_combo.currentText())
-            self.settings.setValue('appearance/custom_colors', self.custom_colors.isChecked())
+            theme_name = self.theme_combo.currentText()
+            use_custom_colors = self.custom_colors.isChecked()
+            
+            self.settings.setValue('appearance/theme', theme_name)
+            self.settings.setValue('appearance/custom_colors', use_custom_colors)
+            
+            self.theme_service.apply_theme(theme_name, use_custom_colors)
+            
             self.settings.setValue('appearance/font_size', self.font_size.value())
             
             # AI settings
@@ -434,3 +473,110 @@ class SettingsDialog(QDialog):
                 logger.info("Master encryption key regenerated")
             except Exception as e:
                 logger.error(f"Error regenerating master key: {str(e)}") 
+    
+    def _on_theme_changed(self, theme_name: str):
+        """Handle theme selection changes."""
+        try:
+            self.theme_service.apply_theme(
+                theme_name,
+                self.custom_colors.isChecked()
+            )
+        except Exception as e:
+            logger.error(f"Error changing theme: {str(e)}")
+    
+    def _on_custom_colors_toggled(self, enabled: bool):
+        """Handle custom colors toggle."""
+        try:
+            current_theme = self.theme_combo.currentText()
+            self.theme_service.apply_theme(current_theme, enabled)
+        except Exception as e:
+            logger.error(f"Error toggling custom colors: {str(e)}")
+    
+    def _choose_accent_color(self):
+        """Open color picker for accent color selection."""
+        try:
+            current_colors = self.settings.value(
+                'appearance/custom_colors_scheme',
+                self.theme_service.LIGHT_THEME if self.theme_combo.currentText() == 'Light'
+                else self.theme_service.DARK_THEME
+            )
+            
+            current_color = QColor(current_colors.get('highlight', '#308CC6'))
+            color = QColorDialog.getColor(
+                current_color,
+                self,
+                "Choose Accent Color"
+            )
+            
+            if color.isValid():
+                # Update custom colors
+                custom_colors = current_colors.copy()
+                custom_colors['highlight'] = color.name()
+                custom_colors['highlight_text'] = '#FFFFFF'  # Ensure readable text
+                
+                # Save and apply
+                self.theme_service.save_custom_colors(custom_colors)
+                self.theme_service.apply_theme(
+                    self.theme_combo.currentText(),
+                    True
+                )
+                
+                # Update button color
+                self.accent_color.setStyleSheet(
+                    f"background-color: {color.name()};"
+                    f"min-width: 60px;"
+                    f"min-height: 20px;"
+                )
+                
+        except Exception as e:
+            logger.error(f"Error choosing accent color: {str(e)}")
+    
+    def _import_theme(self):
+        """Import a theme from a file."""
+        try:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Import Theme",
+                "",
+                "Theme Files (*.json)"
+            )
+            
+            if file_path:
+                theme_data = self.theme_service.import_theme(file_path)
+                
+                # Add to theme combo if it's a complete theme
+                if 'name' in theme_data and 'colors' in theme_data:
+                    self.theme_combo.addItem(theme_data['name'])
+                    self.theme_combo.setCurrentText(theme_data['name'])
+                
+        except Exception as e:
+            logger.error(f"Error importing theme: {str(e)}")
+    
+    def _export_theme(self):
+        """Export the current theme to a file."""
+        try:
+            current_theme = self.theme_combo.currentText()
+            
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Export Theme",
+                f"{current_theme.lower()}_theme.json",
+                "Theme Files (*.json)"
+            )
+            
+            if file_path:
+                # Get current colors
+                colors = self.settings.value(
+                    'appearance/custom_colors_scheme',
+                    self.theme_service.LIGHT_THEME if current_theme == 'Light'
+                    else self.theme_service.DARK_THEME
+                )
+                
+                self.theme_service.export_theme(
+                    current_theme,
+                    colors,
+                    file_path
+                )
+                
+        except Exception as e:
+            logger.error(f"Error exporting theme: {str(e)}") 

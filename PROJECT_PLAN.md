@@ -102,7 +102,7 @@
 ### 2.5 User Interface Enhancements
 - ✅ Create email analysis tab
 - ✅ Add loading indicators
-- ⏳ Implement dark/light theme support
+- ✅ Implement dark/light theme support
 - 📅 Add keyboard shortcuts
 - ✅ Create settings dialog
 - 📅 Implement status notifications
