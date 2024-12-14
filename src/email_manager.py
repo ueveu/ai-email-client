@@ -6,6 +6,7 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 import ssl
 from email_cache import EmailCache
+from email_threading import ThreadManager
 
 class EmailManager:
     """
@@ -25,8 +26,9 @@ class EmailManager:
         self.smtp_connection = None
         self.current_folder = None
         
-        # Initialize email cache
+        # Initialize email cache and thread manager
         self.cache = EmailCache()
+        self.thread_manager = ThreadManager()
     
     def connect_imap(self):
         """
@@ -193,7 +195,7 @@ class EmailManager:
             print(f"Error getting folder status: {str(e)}")
             return None
     
-    def fetch_emails(self, folder=None, limit=50, offset=0, use_cache=True):
+    def fetch_emails(self, folder=None, limit=50, offset=0, use_cache=True, thread=True):
         """
         Fetch emails from the specified folder.
         
@@ -202,10 +204,22 @@ class EmailManager:
             limit (int): Maximum number of emails to fetch
             offset (int): Number of emails to skip from the start
             use_cache (bool): Whether to use cached emails when offline
+            thread (bool): Whether to group emails into conversation threads
         
         Returns:
-            list: List of email data dictionaries
+            list: List of email data dictionaries or EmailThread objects
         """
+        # Fetch emails as before
+        emails = self._fetch_emails_base(folder, limit, offset, use_cache)
+        
+        # Return threaded or unthreaded emails based on parameter
+        if thread:
+            self.thread_manager.process_emails(emails)
+            return self.thread_manager.threads
+        return emails
+    
+    def _fetch_emails_base(self, folder=None, limit=50, offset=0, use_cache=True):
+        """Base method for fetching emails without threading."""
         if folder and folder != self.current_folder:
             if not self.select_folder(folder):
                 return []
@@ -401,3 +415,39 @@ class EmailManager:
                 self.smtp_connection.quit()
             except:
                 pass 
+    
+    def get_thread_for_email(self, message_id):
+        """
+        Get the conversation thread for a specific email.
+        
+        Args:
+            message_id (str): Message ID to find thread for
+        
+        Returns:
+            EmailThread: Thread containing the email, or None
+        """
+        return self.thread_manager.get_thread_for_email(message_id)
+    
+    def get_threads_by_subject(self, subject):
+        """
+        Find conversation threads by subject.
+        
+        Args:
+            subject (str): Subject to search for
+        
+        Returns:
+            list: List of matching threads
+        """
+        return self.thread_manager.get_threads_by_subject(subject)
+    
+    def get_threads_by_participant(self, email_address):
+        """
+        Find conversation threads involving a specific participant.
+        
+        Args:
+            email_address (str): Participant's email address
+        
+        Returns:
+            list: List of matching threads
+        """
+        return self.thread_manager.get_threads_by_participant(email_address)
