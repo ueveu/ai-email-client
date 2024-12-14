@@ -6,6 +6,7 @@ import imaplib
 import smtplib
 import ssl
 from email.mime.text import MIMEText
+from security.credential_manager import CredentialManager
 
 class ConnectionTester(QThread):
     """
@@ -73,6 +74,7 @@ class EmailAccountDialog(QDialog):
     def __init__(self, parent=None, account_data=None):
         super().__init__(parent)
         self.account_data = account_data or {}
+        self.credential_manager = CredentialManager()
         self.setWindowTitle("Email Account Settings")
         self.setModal(True)
         
@@ -157,6 +159,7 @@ class EmailAccountDialog(QDialog):
         layout.addLayout(button_layout)
     
     def load_account_data(self):
+        """Load existing account data into the form fields."""
         self.email_input.setText(self.account_data.get('email', ''))
         self.name_input.setText(self.account_data.get('name', ''))
         self.imap_server.setText(self.account_data.get('imap_server', ''))
@@ -165,6 +168,12 @@ class EmailAccountDialog(QDialog):
         self.smtp_server.setText(self.account_data.get('smtp_server', ''))
         self.smtp_port.setValue(self.account_data.get('smtp_port', 587))
         self.smtp_ssl.setChecked(self.account_data.get('smtp_ssl', True))
+        
+        # Load password from secure storage
+        if 'email' in self.account_data:
+            credentials = self.credential_manager.get_email_credentials(self.account_data['email'])
+            if credentials and 'password' in credentials:
+                self.password_input.setText(credentials['password'])
     
     def get_account_data(self):
         return {
@@ -197,7 +206,27 @@ class EmailAccountDialog(QDialog):
             QMessageBox.warning(self, "Validation Error", "Password is required.")
             return
         
-        self.accept()
+        # Store credentials securely
+        account_data = self.get_account_data()
+        try:
+            # Store password securely
+            self.credential_manager.store_email_credentials(
+                account_data['email'],
+                {'password': account_data['password']}
+            )
+            
+            # Remove password from account data (it's now stored securely)
+            del account_data['password']
+            
+            self.account_data = account_data
+            self.accept()
+            
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to store credentials securely: {str(e)}"
+            )
     
     def test_connection(self, server_type):
         """Test connection to email server."""
