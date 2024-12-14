@@ -3,7 +3,7 @@ Service for AI-powered features using Google's Gemini API.
 """
 
 import google.generativeai as genai
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Set
 import json
 from pathlib import Path
 from datetime import datetime
@@ -373,6 +373,8 @@ class AIService:
             conversation_data = []
             participants = set()
             subjects = []
+            sentiment_history = []
+            topics = set()
             
             for email in history:
                 # Add participants
@@ -383,24 +385,30 @@ class AIService:
                 # Track subject evolution
                 subjects.append(email.get('subject', ''))
                 
+                # Analyze sentiment
+                sentiment = self.analyze_sentiment(email.get('body', ''))
+                sentiment_history.append({
+                    'from': email.get('from', ''),
+                    'date': email.get('date', ''),
+                    'sentiment': sentiment
+                })
+                
+                # Extract topics
+                email_topics = self._extract_topics(email.get('body', ''))
+                topics.update(email_topics)
+                
                 # Add to conversation data
                 conversation_data.append({
                     'from': email.get('from', ''),
                     'date': email.get('date', ''),
                     'content': email.get('body', ''),
-                    'subject': email.get('subject', '')
+                    'subject': email.get('subject', ''),
+                    'sentiment': sentiment,
+                    'topics': email_topics
                 })
             
-            # Prepare prompt for analysis
-            prompt = (
-                "Analyze this email conversation and provide insights. "
-                "Focus on key points, tone patterns, and important context.\n\n"
-                "Conversation History:\n"
-            )
-            
-            for email in conversation_data:
-                prompt += f"\nFrom: {email['from']}\nDate: {email['date']}"
-                prompt += f"\nSubject: {email['subject']}\n{email['content']}\n"
+            # Prepare prompt for comprehensive analysis
+            prompt = self._build_analysis_prompt(conversation_data)
             
             # Generate analysis
             response = self.model.generate_content(prompt)
@@ -410,21 +418,421 @@ class AIService:
             # Parse insights from response
             insights = self._parse_conversation_insights(response.text)
             
-            # Add metadata
+            # Add metadata and advanced analytics
             insights.update({
                 'participant_count': len(participants),
                 'participants': list(participants),
                 'thread_length': len(history),
                 'subject_evolution': subjects,
-                'time_span': self._calculate_time_span(history)
+                'time_span': self._calculate_time_span(history),
+                'sentiment_analysis': self._analyze_sentiment_trends(sentiment_history),
+                'topic_analysis': self._analyze_topics(topics, conversation_data),
+                'conversation_dynamics': self._analyze_conversation_dynamics(conversation_data)
             })
             
-            logger.info("Generated conversation analysis")
+            logger.info("Generated comprehensive conversation analysis")
             return insights
             
         except Exception as e:
             logger.error(f"Error analyzing conversation history: {str(e)}")
             return {}
+    
+    def _build_analysis_prompt(self, conversation_data: List[Dict]) -> str:
+        """Build comprehensive analysis prompt."""
+        prompt = (
+            "Perform a detailed analysis of this email conversation. "
+            "Analyze the following aspects:\\n"
+            "1. Key discussion points and their evolution\\n"
+            "2. Tone patterns and emotional undertones\\n"
+            "3. Participant dynamics and roles\\n"
+            "4. Decision points and action items\\n"
+            "5. Areas of agreement and disagreement\\n"
+            "6. Communication style and effectiveness\\n\\n"
+            "Conversation History:\\n"
+        )
+        
+        for email in conversation_data:
+            prompt += (
+                f"\\nFrom: {email['from']}\\n"
+                f"Date: {email['date']}\\n"
+                f"Subject: {email['subject']}\\n"
+                f"Sentiment: {self._format_sentiment(email['sentiment'])}\\n"
+                f"Topics: {', '.join(email['topics'])}\\n"
+                f"Content:\\n{email['content']}\\n"
+                f"{'-' * 40}\\n"
+            )
+        
+        return prompt
+    
+    def _format_sentiment(self, sentiment: Dict) -> str:
+        """Format sentiment data for prompt."""
+        if not sentiment:
+            return "Neutral"
+        
+        parts = []
+        if 'positivity' in sentiment:
+            parts.append(f"Positivity: {sentiment['positivity']:.2f}")
+        if 'negativity' in sentiment:
+            parts.append(f"Negativity: {sentiment['negativity']:.2f}")
+        if 'formality' in sentiment:
+            parts.append(f"Formality: {sentiment['formality']:.2f}")
+        if 'urgency' in sentiment:
+            parts.append(f"Urgency: {sentiment['urgency']:.2f}")
+        
+        return " | ".join(parts) if parts else "Neutral"
+    
+    def _extract_topics(self, text: str) -> Set[str]:
+        """Extract main topics from text using Gemini."""
+        try:
+            prompt = (
+                "Extract the main topics discussed in this text. "
+                "Return only the topic keywords, separated by commas:\\n\\n"
+                f"{text}"
+            )
+            
+            response = self.model.generate_content(prompt)
+            if not response.text:
+                return set()
+            
+            # Split response into topics and clean
+            topics = {
+                topic.strip().lower()
+                for topic in response.text.split(',')
+                if topic.strip()
+            }
+            
+            return topics
+            
+        except Exception as e:
+            logger.error(f"Error extracting topics: {str(e)}")
+            return set()
+    
+    def _analyze_sentiment_trends(self, sentiment_history: List[Dict]) -> Dict:
+        """Analyze sentiment trends over the conversation."""
+        try:
+            if not sentiment_history:
+                return {}
+            
+            # Calculate overall trends
+            sentiment_trends = {
+                'overall_tone': self._calculate_overall_tone(sentiment_history),
+                'tone_shifts': self._detect_tone_shifts(sentiment_history),
+                'participant_tones': self._analyze_participant_tones(sentiment_history)
+            }
+            
+            return sentiment_trends
+            
+        except Exception as e:
+            logger.error(f"Error analyzing sentiment trends: {str(e)}")
+            return {}
+    
+    def _calculate_overall_tone(self, sentiment_history: List[Dict]) -> str:
+        """Calculate the overall tone of the conversation."""
+        try:
+            # Calculate average sentiment scores
+            total_pos = 0
+            total_neg = 0
+            total_formal = 0
+            count = 0
+            
+            for entry in sentiment_history:
+                sentiment = entry.get('sentiment', {})
+                if sentiment:
+                    total_pos += sentiment.get('positivity', 0)
+                    total_neg += sentiment.get('negativity', 0)
+                    total_formal += sentiment.get('formality', 0)
+                    count += 1
+            
+            if count == 0:
+                return "Neutral"
+            
+            avg_pos = total_pos / count
+            avg_neg = total_neg / count
+            avg_formal = total_formal / count
+            
+            # Determine overall tone
+            if avg_pos > 0.6:
+                return "Very Positive"
+            elif avg_pos > 0.4:
+                return "Positive"
+            elif avg_neg > 0.6:
+                return "Very Negative"
+            elif avg_neg > 0.4:
+                return "Negative"
+            else:
+                return "Neutral"
+            
+        except Exception as e:
+            logger.error(f"Error calculating overall tone: {str(e)}")
+            return "Neutral"
+    
+    def _detect_tone_shifts(self, sentiment_history: List[Dict]) -> List[Dict]:
+        """Detect significant shifts in tone during the conversation."""
+        try:
+            shifts = []
+            prev_sentiment = None
+            
+            for i, entry in enumerate(sentiment_history):
+                current = entry.get('sentiment', {})
+                if not current or not prev_sentiment:
+                    prev_sentiment = current
+                    continue
+                
+                # Calculate sentiment change
+                pos_change = abs(
+                    current.get('positivity', 0) - 
+                    prev_sentiment.get('positivity', 0)
+                )
+                neg_change = abs(
+                    current.get('negativity', 0) - 
+                    prev_sentiment.get('negativity', 0)
+                )
+                
+                # Detect significant shifts (threshold: 0.3)
+                if pos_change > 0.3 or neg_change > 0.3:
+                    shifts.append({
+                        'position': i,
+                        'from_email': entry['from'],
+                        'date': entry['date'],
+                        'change_magnitude': max(pos_change, neg_change),
+                        'direction': 'positive' if pos_change > neg_change else 'negative'
+                    })
+                
+                prev_sentiment = current
+            
+            return shifts
+            
+        except Exception as e:
+            logger.error(f"Error detecting tone shifts: {str(e)}")
+            return []
+    
+    def _analyze_participant_tones(self, sentiment_history: List[Dict]) -> Dict:
+        """Analyze tone patterns for each participant."""
+        try:
+            participant_tones = {}
+            
+            for entry in sentiment_history:
+                participant = entry['from']
+                sentiment = entry.get('sentiment', {})
+                
+                if participant not in participant_tones:
+                    participant_tones[participant] = {
+                        'entries': [],
+                        'average_sentiment': {}
+                    }
+                
+                participant_tones[participant]['entries'].append(sentiment)
+            
+            # Calculate averages for each participant
+            for participant, data in participant_tones.items():
+                entries = data['entries']
+                if not entries:
+                    continue
+                
+                avg_sentiment = {}
+                for key in ['positivity', 'negativity', 'formality', 'urgency']:
+                    values = [
+                        entry.get(key, 0) 
+                        for entry in entries 
+                        if key in entry
+                    ]
+                    if values:
+                        avg_sentiment[key] = sum(values) / len(values)
+                
+                data['average_sentiment'] = avg_sentiment
+            
+            return participant_tones
+            
+        except Exception as e:
+            logger.error(f"Error analyzing participant tones: {str(e)}")
+            return {}
+    
+    def _analyze_topics(self, topics: Set[str], conversation_data: List[Dict]) -> Dict:
+        """Analyze topic patterns and evolution."""
+        try:
+            topic_analysis = {
+                'main_topics': list(topics),
+                'topic_frequency': {},
+                'topic_flow': []
+            }
+            
+            # Calculate topic frequency
+            for email in conversation_data:
+                email_topics = email.get('topics', set())
+                for topic in email_topics:
+                    if topic not in topic_analysis['topic_frequency']:
+                        topic_analysis['topic_frequency'][topic] = 0
+                    topic_analysis['topic_frequency'][topic] += 1
+            
+            # Analyze topic flow
+            for email in conversation_data:
+                topic_analysis['topic_flow'].append({
+                    'date': email.get('date', ''),
+                    'from': email.get('from', ''),
+                    'topics': list(email.get('topics', set()))
+                })
+            
+            return topic_analysis
+            
+        except Exception as e:
+            logger.error(f"Error analyzing topics: {str(e)}")
+            return {}
+    
+    def _analyze_conversation_dynamics(self, conversation_data: List[Dict]) -> Dict:
+        """Analyze conversation dynamics and patterns."""
+        try:
+            dynamics = {
+                'response_patterns': self._analyze_response_patterns(conversation_data),
+                'participation_balance': self._analyze_participation(conversation_data),
+                'conversation_flow': self._analyze_flow(conversation_data)
+            }
+            
+            return dynamics
+            
+        except Exception as e:
+            logger.error(f"Error analyzing conversation dynamics: {str(e)}")
+            return {}
+    
+    def _analyze_response_patterns(self, conversation_data: List[Dict]) -> Dict:
+        """Analyze patterns in how participants respond to each other."""
+        try:
+            patterns = {
+                'average_response_time': None,
+                'response_times': [],
+                'response_lengths': []
+            }
+            
+            prev_email = None
+            for email in conversation_data:
+                if prev_email and email.get('date') and prev_email.get('date'):
+                    # Calculate response time
+                    response_time = email['date'] - prev_email['date']
+                    patterns['response_times'].append({
+                        'from': email['from'],
+                        'to': prev_email['from'],
+                        'time': response_time.total_seconds()
+                    })
+                
+                # Track response lengths
+                patterns['response_lengths'].append({
+                    'from': email['from'],
+                    'length': len(email.get('content', ''))
+                })
+                
+                prev_email = email
+            
+            # Calculate average response time
+            if patterns['response_times']:
+                avg_time = sum(
+                    rt['time'] for rt in patterns['response_times']
+                ) / len(patterns['response_times'])
+                patterns['average_response_time'] = avg_time
+            
+            return patterns
+            
+        except Exception as e:
+            logger.error(f"Error analyzing response patterns: {str(e)}")
+            return {}
+    
+    def _analyze_participation(self, conversation_data: List[Dict]) -> Dict:
+        """Analyze participation balance among participants."""
+        try:
+            participation = {
+                'message_count': {},
+                'content_length': {},
+                'initiator': conversation_data[0]['from'] if conversation_data else None,
+                'most_active': None
+            }
+            
+            for email in conversation_data:
+                sender = email['from']
+                
+                # Count messages
+                if sender not in participation['message_count']:
+                    participation['message_count'][sender] = 0
+                participation['message_count'][sender] += 1
+                
+                # Track content length
+                if sender not in participation['content_length']:
+                    participation['content_length'][sender] = 0
+                participation['content_length'][sender] += len(email.get('content', ''))
+            
+            # Determine most active participant
+            if participation['message_count']:
+                participation['most_active'] = max(
+                    participation['message_count'].items(),
+                    key=lambda x: x[1]
+                )[0]
+            
+            return participation
+            
+        except Exception as e:
+            logger.error(f"Error analyzing participation: {str(e)}")
+            return {}
+    
+    def _analyze_flow(self, conversation_data: List[Dict]) -> List[Dict]:
+        """Analyze the flow and structure of the conversation."""
+        try:
+            flow = []
+            
+            for i, email in enumerate(conversation_data):
+                flow_entry = {
+                    'position': i + 1,
+                    'from': email['from'],
+                    'type': self._determine_email_type(email, conversation_data[:i]),
+                    'contributes_new_topic': self._has_new_topics(
+                        email.get('topics', set()),
+                        conversation_data[:i]
+                    )
+                }
+                flow.append(flow_entry)
+            
+            return flow
+            
+        except Exception as e:
+            logger.error(f"Error analyzing flow: {str(e)}")
+            return []
+    
+    def _determine_email_type(self, email: Dict, previous_emails: List[Dict]) -> str:
+        """Determine the type/role of an email in the conversation."""
+        try:
+            if not previous_emails:
+                return "conversation_start"
+            
+            # Check if it's a reply
+            subject = email.get('subject', '').lower()
+            if subject.startswith('re:'):
+                return "reply"
+            elif subject.startswith('fwd:'):
+                return "forward"
+            
+            # Check content patterns
+            content = email.get('content', '').lower()
+            if any(q in content for q in ['?', 'could you', 'would you']):
+                return "question"
+            elif any(w in content for w in ['thanks', 'thank you']):
+                return "acknowledgment"
+            elif len(content.split()) < 20:
+                return "brief_response"
+            
+            return "detailed_response"
+            
+        except Exception as e:
+            logger.error(f"Error determining email type: {str(e)}")
+            return "unknown"
+    
+    def _has_new_topics(self, current_topics: Set[str], previous_emails: List[Dict]) -> bool:
+        """Check if email introduces new topics."""
+        try:
+            previous_topics = set()
+            for email in previous_emails:
+                previous_topics.update(email.get('topics', set()))
+            
+            return bool(current_topics - previous_topics)
+            
+        except Exception as e:
+            logger.error(f"Error checking for new topics: {str(e)}")
+            return False
     
     def _parse_conversation_insights(self, analysis_text: str) -> Dict:
         """Parse AI-generated conversation analysis into structured data."""
