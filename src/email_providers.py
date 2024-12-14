@@ -44,13 +44,12 @@ class EmailProviders:
             smtp_port=587,
             smtp_ssl=True,
             oauth_supported=True,
-            setup_url="https://accounts.google.com/signin/v2/identifier",
+            setup_url="https://accounts.google.com/o/oauth2/v2/auth",
             app_password_url="https://myaccount.google.com/apppasswords",
             help_url="https://support.google.com/mail/answer/185833",
             oauth_scopes=[
                 "https://mail.google.com/",
-                "https://www.googleapis.com/auth/gmail.modify",
-                "https://www.googleapis.com/auth/gmail.compose"
+                "https://www.googleapis.com/auth/gmail.modify"
             ]
         ),
         Provider.OUTLOOK: ProviderConfig(
@@ -62,9 +61,9 @@ class EmailProviders:
             smtp_port=587,
             smtp_ssl=True,
             oauth_supported=True,
-            setup_url="https://login.live.com/login.srf",
-            app_password_url="https://account.live.com/proofs/AppPassword",
-            help_url="https://support.microsoft.com/en-us/account-billing/using-app-passwords-with-apps-that-don-t-support-two-step-verification-5896ed9b-4263-e681-128a-a6f2979a7944",
+            setup_url="https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+            app_password_url="https://account.microsoft.com/security",
+            help_url="https://support.microsoft.com/account-billing/using-app-passwords-with-apps-that-don-t-support-two-step-verification-5896ed9b-4263-e681-128a-a6f2979a7944",
             oauth_scopes=[
                 "offline_access",
                 "https://outlook.office.com/IMAP.AccessAsUser.All",
@@ -80,7 +79,7 @@ class EmailProviders:
             smtp_port=587,
             smtp_ssl=True,
             oauth_supported=True,
-            setup_url="https://login.yahoo.com",
+            setup_url="https://api.login.yahoo.com/oauth2/request_auth",
             app_password_url="https://login.yahoo.com/account/security/app-passwords",
             help_url="https://help.yahoo.com/kb/generate-third-party-passwords-sln15241.html"
         )

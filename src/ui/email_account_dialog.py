@@ -102,37 +102,73 @@ class EmailAccountDialog(QDialog):
         quick_setup = QGroupBox("Quick Setup")
         quick_layout = QVBoxLayout()
         
+        # Provider login buttons
         provider_buttons = QHBoxLayout()
         
-        # Gmail button
-        gmail_btn = QPushButton("Gmail")
-        gmail_btn.clicked.connect(lambda: self.quick_setup(Provider.GMAIL))
+        # Gmail button with logo
+        gmail_btn = QPushButton("Login with Gmail")
+        gmail_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ffffff;
+                border: 1px solid #dadce0;
+                border-radius: 4px;
+                padding: 8px 16px;
+                color: #3c4043;
+            }
+            QPushButton:hover {
+                background-color: #f8f9fa;
+                border-color: #d2e3fc;
+            }
+        """)
+        gmail_btn.clicked.connect(lambda: self.provider_login(Provider.GMAIL))
         provider_buttons.addWidget(gmail_btn)
         
-        # Outlook button
-        outlook_btn = QPushButton("Outlook")
-        outlook_btn.clicked.connect(lambda: self.quick_setup(Provider.OUTLOOK))
+        # Outlook button with logo
+        outlook_btn = QPushButton("Login with Outlook")
+        outlook_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ffffff;
+                border: 1px solid #dadce0;
+                border-radius: 4px;
+                padding: 8px 16px;
+                color: #3c4043;
+            }
+            QPushButton:hover {
+                background-color: #f8f9fa;
+                border-color: #d2e3fc;
+            }
+        """)
+        outlook_btn.clicked.connect(lambda: self.provider_login(Provider.OUTLOOK))
         provider_buttons.addWidget(outlook_btn)
         
-        # Yahoo button
-        yahoo_btn = QPushButton("Yahoo")
-        yahoo_btn.clicked.connect(lambda: self.quick_setup(Provider.YAHOO))
+        # Yahoo button with logo
+        yahoo_btn = QPushButton("Login with Yahoo")
+        yahoo_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ffffff;
+                border: 1px solid #dadce0;
+                border-radius: 4px;
+                padding: 8px 16px;
+                color: #3c4043;
+            }
+            QPushButton:hover {
+                background-color: #f8f9fa;
+                border-color: #d2e3fc;
+            }
+        """)
+        yahoo_btn.clicked.connect(lambda: self.provider_login(Provider.YAHOO))
         provider_buttons.addWidget(yahoo_btn)
         
         quick_layout.addLayout(provider_buttons)
         
-        # Help buttons
-        help_buttons = QHBoxLayout()
+        # Add a label with instructions
+        instructions = QLabel(
+            "Click one of the buttons above to log in to your email provider.\n"
+            "You will be redirected to the provider's login page."
+        )
+        instructions.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        quick_layout.addWidget(instructions)
         
-        app_password_btn = QPushButton("Get App Password")
-        app_password_btn.clicked.connect(self.open_app_password_setup)
-        help_buttons.addWidget(app_password_btn)
-        
-        help_btn = QPushButton("Help")
-        help_btn.clicked.connect(self.open_help)
-        help_buttons.addWidget(help_btn)
-        
-        quick_layout.addLayout(help_buttons)
         quick_setup.setLayout(quick_layout)
         layout.addWidget(quick_setup)
         
@@ -208,18 +244,19 @@ class EmailAccountDialog(QDialog):
         layout.addLayout(button_layout)
     
     @handle_errors
-    def quick_setup(self, provider: Provider):
+    def provider_login(self, provider: Provider):
         """
-        Handle quick setup for a specific provider with automatic login redirects.
+        Handle direct login for a provider.
+        Opens the provider's OAuth login page in the default browser.
         
         Args:
-            provider (Provider): Email provider to set up
+            provider (Provider): Email provider to login with
         """
         config = EmailProviders.get_provider_config(provider)
         if not config:
             return
         
-        # Set server settings
+        # Pre-configure server settings
         self.imap_server.setText(config.imap_server)
         self.imap_port.setValue(config.imap_port)
         self.imap_ssl.setChecked(config.imap_ssl)
@@ -227,106 +264,19 @@ class EmailAccountDialog(QDialog):
         self.smtp_port.setValue(config.smtp_port)
         self.smtp_ssl.setChecked(config.smtp_ssl)
         
-        # Get current email if entered
-        email = self.email_input.text()
+        # Open provider's login page
+        EmailProviders.open_provider_setup(provider)
         
-        # Show setup instructions with direct links
-        setup_message = (
-            f"Setting up {config.name} Account\n\n"
-            f"1. Click the appropriate button below to proceed:\n\n"
+        # Show instructions
+        QMessageBox.information(
+            self,
+            "Login Instructions",
+            f"1. Log in to your {config.name} account in the browser\n"
+            f"2. Allow the requested permissions\n"
+            f"3. Copy the app password and paste it here\n\n"
+            f"Note: If you have 2-factor authentication enabled,\n"
+            f"you'll need to use an App Password."
         )
-        
-        if provider == Provider.GMAIL:
-            setup_message += (
-                "• For Gmail accounts:\n"
-                "  - If you have 2-factor authentication enabled:\n"
-                "    Click 'Get App Password' and generate a password\n"
-                "  - If not using 2-factor authentication:\n"
-                "    Click 'Enable Access' to allow less secure app access\n\n"
-                "Note: Using an App Password is recommended for better security."
-            )
-        elif provider == Provider.OUTLOOK:
-            setup_message += (
-                "• For Outlook accounts:\n"
-                "  - Click 'Enable Access' to sign in to your Microsoft account\n"
-                "  - Allow the required permissions when prompted\n"
-                "  - If you have 2-factor authentication, follow the prompts\n"
-            )
-        elif provider == Provider.YAHOO:
-            setup_message += (
-                "• For Yahoo accounts:\n"
-                "  - Click 'Get App Password' to generate a secure password\n"
-                "  - Sign in to your Yahoo account when prompted\n"
-                "  - Generate and copy the app password\n"
-            )
-        
-        # Create custom dialog with direct action buttons
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle("Provider Setup")
-        msg_box.setText(setup_message)
-        msg_box.setIcon(QMessageBox.Icon.Information)
-        
-        # Add custom buttons based on provider
-        enable_access_btn = msg_box.addButton("Enable Access", QMessageBox.ButtonRole.ActionRole)
-        app_password_btn = msg_box.addButton("Get App Password", QMessageBox.ButtonRole.ActionRole)
-        help_btn = msg_box.addButton("Help", QMessageBox.ButtonRole.HelpRole)
-        close_btn = msg_box.addButton("Close", QMessageBox.ButtonRole.RejectRole)
-        
-        msg_box.exec()
-        
-        clicked_button = msg_box.clickedButton()
-        
-        if clicked_button == enable_access_btn:
-            # Open provider's main authentication page
-            EmailProviders.open_provider_setup(provider, email)
-        elif clicked_button == app_password_btn:
-            # Open app password generation page
-            EmailProviders.open_app_password_setup(provider)
-        elif clicked_button == help_btn:
-            # Open help page
-            EmailProviders.open_help(provider)
-            
-        # Pre-fill email field with domain if empty
-        if not email:
-            if provider == Provider.GMAIL:
-                self.email_input.setText("@gmail.com")
-                self.email_input.setCursorPosition(0)
-            elif provider == Provider.OUTLOOK:
-                self.email_input.setText("@outlook.com")
-                self.email_input.setCursorPosition(0)
-            elif provider == Provider.YAHOO:
-                self.email_input.setText("@yahoo.com")
-                self.email_input.setCursorPosition(0)
-    
-    @handle_errors
-    def open_app_password_setup(self):
-        """Open app password setup page for the current provider."""
-        email = self.email_input.text()
-        if not email:
-            QMessageBox.warning(
-                self,
-                "Input Required",
-                "Please enter your email address first."
-            )
-            return
-        
-        provider = EmailProviders.detect_provider(email)
-        EmailProviders.open_app_password_setup(provider)
-    
-    @handle_errors
-    def open_help(self):
-        """Open help page for the current provider."""
-        email = self.email_input.text()
-        if not email:
-            QMessageBox.warning(
-                self,
-                "Input Required",
-                "Please enter your email address first."
-            )
-            return
-        
-        provider = EmailProviders.detect_provider(email)
-        EmailProviders.open_help(provider)
     
     @handle_errors
     def on_email_changed(self, email):
