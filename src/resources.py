@@ -1,6 +1,6 @@
 from pathlib import Path
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QBrush, QLinearGradient
-from PyQt6.QtCore import QSize, Qt, QPoint
+from PyQt6.QtCore import QSize, Qt, QPointF
 
 class Resources:
     """
@@ -78,7 +78,7 @@ class Resources:
         splash = QPixmap(400, 300)
         
         # Create gradient background
-        gradient = QLinearGradient(QPoint(0, 0), QPoint(400, 300))
+        gradient = QLinearGradient(0, 0, 400, 300)  # Use float coordinates
         gradient.setColorAt(0, QColor("#1976D2"))  # Dark Blue
         gradient.setColorAt(1, QColor("#64B5F6"))  # Light Blue
         

@@ -1,9 +1,9 @@
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, 
                            QTabWidget, QMenuBar)
 from PyQt6.QtCore import Qt
-from .email_accounts_tab import EmailAccountsTab
-from .email_analysis_tab import EmailAnalysisTab
-from ..resources import Resources
+from ui.email_accounts_tab import EmailAccountsTab
+from ui.email_analysis_tab import EmailAnalysisTab
+from resources import Resources
 
 class MainWindow(QMainWindow):
     """

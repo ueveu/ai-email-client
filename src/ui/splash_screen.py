@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import QSplashScreen
 from PyQt6.QtCore import Qt
-from ..resources import Resources
+from resources import Resources
 
 class SplashScreen(QSplashScreen):
     """

@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 import json
+from security import CredentialManager
 
 # Load environment variables from .env file
 load_dotenv()
@@ -21,14 +22,21 @@ class Config:
         # Create application directory if it doesn't exist
         self.app_dir.mkdir(exist_ok=True)
         
+        # Initialize credential manager
+        self.credential_manager = CredentialManager()
+        
         # Load or create configuration files
         self.settings = self._load_settings()
         self.accounts = self._load_accounts()
+        
+        # Store API key securely if provided in environment
+        api_key = os.getenv("GEMINI_API_KEY")
+        if api_key:
+            self.credential_manager.store_api_key("gemini", api_key)
     
     def _load_settings(self):
         """Load application settings from file."""
         default_settings = {
-            "gemini_api_key": os.getenv("GEMINI_API_KEY", ""),
             "default_email": "",
             "theme": "light",
             "max_emails_to_fetch": 50
@@ -71,6 +79,20 @@ class Config:
         Args:
             account_data (dict): Email account configuration
         """
+        # Extract credentials for secure storage
+        credentials = {
+            "password": account_data.pop("password", ""),
+            "oauth_token": account_data.pop("oauth_token", ""),
+            "oauth_refresh_token": account_data.pop("oauth_refresh_token", "")
+        }
+        
+        # Store credentials securely
+        self.credential_manager.store_email_credentials(
+            account_data["email"],
+            credentials
+        )
+        
+        # Store non-sensitive account data
         self.accounts.append(account_data)
         self._save_accounts()
     
@@ -81,6 +103,10 @@ class Config:
         Args:
             email (str): Email address to remove
         """
+        # Remove credentials
+        self.credential_manager.delete_email_credentials(email)
+        
+        # Remove account data
         self.accounts = [acc for acc in self.accounts if acc["email"] != email]
         self._save_accounts()
     
@@ -92,6 +118,16 @@ class Config:
             email (str): Email address to update
             account_data (dict): New account configuration
         """
+        # Extract and store credentials
+        if "password" in account_data or "oauth_token" in account_data:
+            credentials = {
+                "password": account_data.pop("password", ""),
+                "oauth_token": account_data.pop("oauth_token", ""),
+                "oauth_refresh_token": account_data.pop("oauth_refresh_token", "")
+            }
+            self.credential_manager.store_email_credentials(email, credentials)
+        
+        # Update account data
         for i, account in enumerate(self.accounts):
             if account["email"] == email:
                 self.accounts[i] = account_data
@@ -108,10 +144,28 @@ class Config:
         Returns:
             dict: Account configuration or None if not found
         """
+        # Get account data
         for account in self.accounts:
             if account["email"] == email:
+                # Get credentials
+                credentials = self.credential_manager.get_email_credentials(email)
+                if credentials:
+                    # Merge account data with credentials
+                    return {**account, **credentials}
                 return account
         return None
+    
+    def get_api_key(self, api_name="gemini"):
+        """
+        Get API key from secure storage.
+        
+        Args:
+            api_name (str): Name of the API
+        
+        Returns:
+            str: API key or None if not found
+        """
+        return self.credential_manager.get_api_key(api_name)
     
     def update_settings(self, settings):
         """

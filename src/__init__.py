@@ -1,0 +1,3 @@
+"""
+AI Email Assistant package.
+""" 
