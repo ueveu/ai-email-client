@@ -1,109 +1,169 @@
 import keyring
 import json
-from pathlib import Path
-from cryptography.fernet import Fernet
-from base64 import b64encode, b64decode
+from utils.logger import logger
+from utils.error_handler import handle_errors
 
 class CredentialManager:
-    """
-    Manages secure storage and retrieval of email credentials
-    using system keyring and encryption.
-    """
+    """Manages secure storage and retrieval of credentials."""
     
-    def __init__(self):
-        """Initialize the credential manager."""
-        self.app_name = "AIEmailAssistant"
-        self.key_file = Path.home() / ".ai-email-assistant" / "encryption.key"
-        self._ensure_encryption_key()
+    # Service names for different credential types
+    EMAIL_SERVICE = "ai_email_client_email"
+    OAUTH_SERVICE = "ai_email_client_oauth"
+    API_SERVICE = "ai_email_client_api"
     
-    def _ensure_encryption_key(self):
-        """Ensure encryption key exists or create a new one."""
-        self.key_file.parent.mkdir(parents=True, exist_ok=True)
-        
-        if not self.key_file.exists():
-            # Generate new key
-            key = Fernet.generate_key()
-            with open(self.key_file, 'wb') as f:
-                f.write(key)
-        
-        # Load the key
-        with open(self.key_file, 'rb') as f:
-            self.key = f.read()
-        
-        self.fernet = Fernet(self.key)
-    
-    def _encrypt(self, data):
+    @handle_errors
+    def store_email_credentials(self, email: str, credentials: dict):
         """
-        Encrypt data.
-        
-        Args:
-            data (str): Data to encrypt
-        
-        Returns:
-            str: Encrypted data in base64 format
-        """
-        return b64encode(
-            self.fernet.encrypt(data.encode())
-        ).decode()
-    
-    def _decrypt(self, encrypted_data):
-        """
-        Decrypt data.
-        
-        Args:
-            encrypted_data (str): Encrypted data in base64 format
-        
-        Returns:
-            str: Decrypted data
-        """
-        return self.fernet.decrypt(
-            b64decode(encrypted_data.encode())
-        ).decode()
-    
-    def store_email_credentials(self, email, credentials):
-        """
-        Store email credentials securely.
+        Store email account credentials securely.
         
         Args:
             email (str): Email address
             credentials (dict): Credentials to store
         """
-        # Encrypt credentials
-        encrypted_data = self._encrypt(json.dumps(credentials))
-        
-        # Store in system keyring
-        keyring.set_password(self.app_name, email, encrypted_data)
+        try:
+            # Store credentials as JSON string
+            keyring.set_password(
+                self.EMAIL_SERVICE,
+                email,
+                json.dumps(credentials)
+            )
+            logger.logger.info(f"Stored credentials for {email}")
+        except Exception as e:
+            logger.error(f"Failed to store credentials: {str(e)}")
+            raise
     
-    def get_email_credentials(self, email):
+    @handle_errors
+    def get_email_credentials(self, email: str) -> dict:
         """
-        Retrieve email credentials.
+        Retrieve email account credentials.
         
         Args:
             email (str): Email address
         
         Returns:
-            dict: Credentials or None if not found
+            dict: Retrieved credentials or None if not found
         """
-        # Get from system keyring
-        encrypted_data = keyring.get_password(self.app_name, email)
-        if not encrypted_data:
-            return None
-        
         try:
-            # Decrypt and parse
-            decrypted_data = self._decrypt(encrypted_data)
-            return json.loads(decrypted_data)
-        except:
-            return None
+            credentials_json = keyring.get_password(self.EMAIL_SERVICE, email)
+            if credentials_json:
+                return json.loads(credentials_json)
+        except Exception as e:
+            logger.error(f"Failed to retrieve credentials: {str(e)}")
+        return None
     
-    def delete_email_credentials(self, email):
+    @handle_errors
+    def delete_email_credentials(self, email: str):
         """
-        Delete email credentials.
+        Delete email account credentials.
         
         Args:
             email (str): Email address
         """
         try:
-            keyring.delete_password(self.app_name, email)
-        except keyring.errors.PasswordDeleteError:
-            pass  # Already deleted or not found 
+            keyring.delete_password(self.EMAIL_SERVICE, email)
+            logger.logger.info(f"Deleted credentials for {email}")
+        except Exception as e:
+            logger.error(f"Failed to delete credentials: {str(e)}")
+            raise
+    
+    @handle_errors
+    def store_oauth_tokens(self, email: str, tokens: dict):
+        """
+        Store OAuth tokens securely.
+        
+        Args:
+            email (str): Email address
+            tokens (dict): OAuth tokens including access_token, refresh_token, etc.
+        """
+        try:
+            keyring.set_password(
+                self.OAUTH_SERVICE,
+                email,
+                json.dumps(tokens)
+            )
+            logger.logger.info(f"Stored OAuth tokens for {email}")
+        except Exception as e:
+            logger.error(f"Failed to store OAuth tokens: {str(e)}")
+            raise
+    
+    @handle_errors
+    def get_oauth_tokens(self, email: str) -> dict:
+        """
+        Retrieve OAuth tokens.
+        
+        Args:
+            email (str): Email address
+        
+        Returns:
+            dict: OAuth tokens or None if not found
+        """
+        try:
+            tokens_json = keyring.get_password(self.OAUTH_SERVICE, email)
+            if tokens_json:
+                return json.loads(tokens_json)
+        except Exception as e:
+            logger.error(f"Failed to retrieve OAuth tokens: {str(e)}")
+        return None
+    
+    @handle_errors
+    def delete_oauth_tokens(self, email: str):
+        """
+        Delete OAuth tokens.
+        
+        Args:
+            email (str): Email address
+        """
+        try:
+            keyring.delete_password(self.OAUTH_SERVICE, email)
+            logger.logger.info(f"Deleted OAuth tokens for {email}")
+        except Exception as e:
+            logger.error(f"Failed to delete OAuth tokens: {str(e)}")
+            raise
+    
+    @handle_errors
+    def store_api_key(self, service: str, api_key: str):
+        """
+        Store API key securely.
+        
+        Args:
+            service (str): Service name
+            api_key (str): API key to store
+        """
+        try:
+            keyring.set_password(self.API_SERVICE, service, api_key)
+            logger.logger.info(f"Stored API key for {service}")
+        except Exception as e:
+            logger.error(f"Failed to store API key: {str(e)}")
+            raise
+    
+    @handle_errors
+    def get_api_key(self, service: str) -> str:
+        """
+        Retrieve API key.
+        
+        Args:
+            service (str): Service name
+        
+        Returns:
+            str: API key or None if not found
+        """
+        try:
+            return keyring.get_password(self.API_SERVICE, service)
+        except Exception as e:
+            logger.error(f"Failed to retrieve API key: {str(e)}")
+            return None
+    
+    @handle_errors
+    def delete_api_key(self, service: str):
+        """
+        Delete API key.
+        
+        Args:
+            service (str): Service name
+        """
+        try:
+            keyring.delete_password(self.API_SERVICE, service)
+            logger.logger.info(f"Deleted API key for {service}")
+        except Exception as e:
+            logger.error(f"Failed to delete API key: {str(e)}")
+            raise
