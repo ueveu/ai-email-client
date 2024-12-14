@@ -638,3 +638,94 @@ class EmailManager:
         except Exception as e:
             logger.logger.error(f"Error moving message {message_id} to {target_folder}: {str(e)}")
             return False
+    
+    def mark_email(self, message_id: str, flag: str, value: bool = True) -> bool:
+        """
+        Mark or unmark an email with a specific flag.
+        
+        Args:
+            message_id (str): ID of the message to mark
+            flag (str): Flag to set (e.g. '\Seen' for read, '\Flagged' for flagged)
+            value (bool): True to add flag, False to remove it
+            
+        Returns:
+            bool: True if operation was successful, False otherwise
+        """
+        logger.logger.debug(f"{'Setting' if value else 'Removing'} flag {flag} for message {message_id}")
+        
+        if not self.imap_connection:
+            if not self.connect_imap():
+                return False
+        
+        try:
+            # Add or remove flag
+            operation = '+FLAGS' if value else '-FLAGS'
+            result = self.imap_connection.store(message_id, operation, flag)
+            
+            success = result[0] == 'OK'
+            if success:
+                logger.logger.info(
+                    f"Successfully {'set' if value else 'removed'} flag {flag} "
+                    f"for message {message_id}"
+                )
+            else:
+                logger.logger.error(
+                    f"Failed to {'set' if value else 'remove'} flag {flag} "
+                    f"for message {message_id}"
+                )
+            return success
+            
+        except Exception as e:
+            logger.logger.error(
+                f"Error {'setting' if value else 'removing'} flag {flag} "
+                f"for message {message_id}: {str(e)}"
+            )
+            return False
+    
+    def mark_read(self, message_id: str) -> bool:
+        """
+        Mark an email as read.
+        
+        Args:
+            message_id (str): ID of the message to mark
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        return self.mark_email(message_id, '\\Seen', True)
+    
+    def mark_unread(self, message_id: str) -> bool:
+        """
+        Mark an email as unread.
+        
+        Args:
+            message_id (str): ID of the message to mark
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        return self.mark_email(message_id, '\\Seen', False)
+    
+    def mark_flagged(self, message_id: str) -> bool:
+        """
+        Flag an email.
+        
+        Args:
+            message_id (str): ID of the message to flag
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        return self.mark_email(message_id, '\\Flagged', True)
+    
+    def mark_unflagged(self, message_id: str) -> bool:
+        """
+        Remove flag from an email.
+        
+        Args:
+            message_id (str): ID of the message to unflag
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        return self.mark_email(message_id, '\\Flagged', False)

@@ -98,6 +98,12 @@ class EmailAccountsTab(QWidget):
         self.folder_tree.folder_deleted.connect(self.on_folder_deleted)
         self.folder_tree.folder_renamed.connect(self.on_folder_renamed)
         self.email_list.email_moved.connect(self.on_email_moved)
+        
+        # Connect email marking signals
+        self.email_list.email_mark_read.connect(self.on_email_mark_read)
+        self.email_list.email_mark_unread.connect(self.on_email_mark_unread)
+        self.email_list.email_mark_flagged.connect(self.on_email_mark_flagged)
+        self.email_list.email_mark_unflagged.connect(self.on_email_mark_unflagged)
     
     @handle_errors
     def on_folder_selected(self, folder_name):
@@ -279,3 +285,43 @@ class EmailAccountsTab(QWidget):
         has_selection = len(self.accounts_table.selectedItems()) > 0
         self.edit_account_btn.setEnabled(has_selection)
         self.remove_account_btn.setEnabled(has_selection)
+    
+    @handle_errors
+    def on_email_mark_read(self, message_id):
+        """Handle marking email as read."""
+        if hasattr(self.parent, 'email_manager'):
+            if self.parent.email_manager.mark_read(message_id):
+                # Refresh current folder to update UI
+                current_folder = self.folder_tree.selected_folder
+                if current_folder:
+                    self.on_folder_selected(current_folder)
+    
+    @handle_errors
+    def on_email_mark_unread(self, message_id):
+        """Handle marking email as unread."""
+        if hasattr(self.parent, 'email_manager'):
+            if self.parent.email_manager.mark_unread(message_id):
+                # Refresh current folder to update UI
+                current_folder = self.folder_tree.selected_folder
+                if current_folder:
+                    self.on_folder_selected(current_folder)
+    
+    @handle_errors
+    def on_email_mark_flagged(self, message_id):
+        """Handle flagging email."""
+        if hasattr(self.parent, 'email_manager'):
+            if self.parent.email_manager.mark_flagged(message_id):
+                # Refresh current folder to update UI
+                current_folder = self.folder_tree.selected_folder
+                if current_folder:
+                    self.on_folder_selected(current_folder)
+    
+    @handle_errors
+    def on_email_mark_unflagged(self, message_id):
+        """Handle unflagging email."""
+        if hasattr(self.parent, 'email_manager'):
+            if self.parent.email_manager.mark_unflagged(message_id):
+                # Refresh current folder to update UI
+                current_folder = self.folder_tree.selected_folder
+                if current_folder:
+                    self.on_folder_selected(current_folder)

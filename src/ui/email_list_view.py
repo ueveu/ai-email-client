@@ -14,6 +14,10 @@ class EmailListView(QWidget):
     
     email_selected = pyqtSignal(dict)  # Emitted when an email is selected
     email_moved = pyqtSignal(str, str)  # Emitted when email is moved (message_id, target_folder)
+    email_mark_read = pyqtSignal(str)  # Emitted when email should be marked as read
+    email_mark_unread = pyqtSignal(str)  # Emitted when email should be marked as unread
+    email_mark_flagged = pyqtSignal(str)  # Emitted when email should be flagged
+    email_mark_unflagged = pyqtSignal(str)  # Emitted when email should be unflagged
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -133,6 +137,22 @@ class EmailListView(QWidget):
         
         menu = QMenu(self)
         
+        # Add mark read/unread actions
+        is_unread = 'unread' in email_data.get('flags', [])
+        read_action = menu.addAction("Mark as Read" if is_unread else "Mark as Unread")
+        read_action.triggered.connect(
+            lambda: self.mark_read(email_data) if is_unread else self.mark_unread(email_data)
+        )
+        
+        # Add flag/unflag actions
+        is_flagged = 'flagged' in email_data.get('flags', [])
+        flag_action = menu.addAction("Remove Flag" if is_flagged else "Flag")
+        flag_action.triggered.connect(
+            lambda: self.mark_unflagged(email_data) if is_flagged else self.mark_flagged(email_data)
+        )
+        
+        menu.addSeparator()
+        
         # Add move to folder submenu
         move_menu = menu.addMenu("Move to")
         
@@ -148,8 +168,14 @@ class EmailListView(QWidget):
         if move_menu.actions():
             move_menu.addSeparator()
         
-        # Add custom folders (to be populated by parent widget)
-        # This will be connected to the folder tree's folder list
+        # Add custom folders if available
+        if hasattr(self, 'available_folders'):
+            for folder in self.available_folders:
+                if folder not in ['INBOX', 'Archive', 'Spam', 'Trash'] and folder != self.current_folder:
+                    action = move_menu.addAction(folder)
+                    action.triggered.connect(
+                        lambda checked, f=folder: self.move_email(email_data, f)
+                    )
         
         menu.exec(self.email_table.mapToGlobal(position))
     
@@ -191,3 +217,19 @@ class EmailListView(QWidget):
             folders (list): List of folder dictionaries
         """
         self.available_folders = [f['name'] for f in folders] 
+    
+    def mark_read(self, email_data):
+        """Emit signal to mark email as read."""
+        self.email_mark_read.emit(str(email_data['message_id']))
+    
+    def mark_unread(self, email_data):
+        """Emit signal to mark email as unread."""
+        self.email_mark_unread.emit(str(email_data['message_id']))
+    
+    def mark_flagged(self, email_data):
+        """Emit signal to flag email."""
+        self.email_mark_flagged.emit(str(email_data['message_id']))
+    
+    def mark_unflagged(self, email_data):
+        """Emit signal to unflag email."""
+        self.email_mark_unflagged.emit(str(email_data['message_id']))
