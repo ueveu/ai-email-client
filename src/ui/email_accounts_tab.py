@@ -1,8 +1,10 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QPushButton, 
                            QTableWidget, QTableWidgetItem, QHBoxLayout,
-                           QMessageBox)
-from PyQt6.QtCore import pyqtSignal
+                           QMessageBox, QSplitter)
+from PyQt6.QtCore import pyqtSignal, Qt
 from ui.email_account_dialog import EmailAccountDialog
+from ui.folder_tree import FolderTree
+from ui.email_list_view import EmailListView
 from utils.logger import logger
 from utils.error_handler import handle_errors
 from security.credential_manager import CredentialManager
@@ -21,11 +23,19 @@ class EmailAccountsTab(QWidget):
         super().__init__(parent)
         self.accounts = []  # List of account data dictionaries
         self.parent = parent  # Store reference to main window
+        self.credential_manager = CredentialManager()
         self.setup_ui()
     
     def setup_ui(self):
         """Sets up the UI components for the email accounts tab."""
         layout = QVBoxLayout(self)
+        
+        # Create horizontal layout for accounts and folders
+        h_layout = QHBoxLayout()
+        
+        # Create left panel for accounts
+        accounts_panel = QWidget()
+        accounts_layout = QVBoxLayout(accounts_panel)
         
         # Create account list table
         self.accounts_table = QTableWidget()
@@ -33,6 +43,7 @@ class EmailAccountsTab(QWidget):
         self.accounts_table.setHorizontalHeaderLabels(["Email", "Server", "Status"])
         self.accounts_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.accounts_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        accounts_layout.addWidget(self.accounts_table)
         
         # Create button layout
         button_layout = QHBoxLayout()
@@ -55,12 +66,108 @@ class EmailAccountsTab(QWidget):
         button_layout.addWidget(self.remove_account_btn)
         button_layout.addStretch()
         
-        # Add widgets to main layout
-        layout.addWidget(self.accounts_table)
-        layout.addLayout(button_layout)
+        accounts_layout.addLayout(button_layout)
         
-        # Connect selection signal
+        # Create right panel with splitter for folders and emails
+        right_panel = QSplitter(Qt.Orientation.Vertical)
+        
+        # Create folder tree
+        self.folder_tree = FolderTree()
+        right_panel.addWidget(self.folder_tree)
+        
+        # Create email list
+        self.email_list = EmailListView()
+        right_panel.addWidget(self.email_list)
+        
+        # Set initial splitter sizes (30% folders, 70% emails)
+        right_panel.setSizes([300, 700])
+        
+        # Add panels to horizontal layout with splitter
+        h_splitter = QSplitter(Qt.Orientation.Horizontal)
+        h_splitter.addWidget(accounts_panel)
+        h_splitter.addWidget(right_panel)
+        h_splitter.setSizes([300, 900])  # 25% accounts, 75% folders/emails
+        
+        # Add splitter to main layout
+        layout.addWidget(h_splitter)
+        
+        # Connect signals
         self.accounts_table.itemSelectionChanged.connect(self.on_selection_changed)
+        self.folder_tree.folder_selected.connect(self.on_folder_selected)
+        self.folder_tree.folder_created.connect(self.on_folder_created)
+        self.folder_tree.folder_deleted.connect(self.on_folder_deleted)
+        self.folder_tree.folder_renamed.connect(self.on_folder_renamed)
+        self.email_list.email_moved.connect(self.on_email_moved)
+    
+    @handle_errors
+    def on_folder_selected(self, folder_name):
+        """Handle folder selection."""
+        logger.logger.debug(f"Selected folder: {folder_name}")
+        if hasattr(self.parent, 'email_manager'):
+            # Fetch emails from selected folder
+            emails = self.parent.email_manager.fetch_emails(folder=folder_name)
+            self.email_list.update_emails(emails, folder_name)
+            
+            # Update folder status
+            status = self.parent.email_manager.get_folder_status(folder_name)
+            if status:
+                self.folder_tree.update_folder_status(folder_name, status)
+    
+    @handle_errors
+    def on_folder_created(self, folder_name):
+        """Handle folder creation."""
+        if hasattr(self.parent, 'email_manager'):
+            if self.parent.email_manager.create_folder(folder_name):
+                self.refresh_folders()
+    
+    @handle_errors
+    def on_folder_deleted(self, folder_name):
+        """Handle folder deletion."""
+        if hasattr(self.parent, 'email_manager'):
+            if self.parent.email_manager.delete_folder(folder_name):
+                self.refresh_folders()
+    
+    @handle_errors
+    def on_folder_renamed(self, old_name, new_name):
+        """Handle folder renaming."""
+        if hasattr(self.parent, 'email_manager'):
+            if self.parent.email_manager.rename_folder(old_name, new_name):
+                self.refresh_folders()
+    
+    @handle_errors
+    def on_email_moved(self, message_id, target_folder):
+        """Handle email movement between folders."""
+        if hasattr(self.parent, 'email_manager'):
+            if self.parent.email_manager.move_email(message_id, target_folder):
+                # Refresh current folder
+                current_folder = self.folder_tree.selected_folder
+                if current_folder:
+                    self.on_folder_selected(current_folder)
+                
+                # Update folder status
+                self.refresh_folder_status()
+    
+    @handle_errors
+    def refresh_folder_status(self):
+        """Refresh status for all folders."""
+        if not hasattr(self.parent, 'email_manager'):
+            return
+            
+        for folder_name in self.folder_tree.folder_items:
+            status = self.parent.email_manager.get_folder_status(folder_name)
+            if status:
+                self.folder_tree.update_folder_status(folder_name, status)
+    
+    @handle_errors
+    def refresh_folders(self):
+        """Refresh the folder list and status."""
+        if hasattr(self.parent, 'email_manager'):
+            folders = self.parent.email_manager.list_folders()
+            self.folder_tree.update_folders(folders)
+            self.refresh_folder_status()
+            
+            # Update available folders in email list
+            self.email_list.update_folder_list(folders)
     
     def load_accounts(self, accounts):
         """
@@ -172,30 +279,3 @@ class EmailAccountsTab(QWidget):
         has_selection = len(self.accounts_table.selectedItems()) > 0
         self.edit_account_btn.setEnabled(has_selection)
         self.remove_account_btn.setEnabled(has_selection)
-    
-    @handle_errors
-    def refresh_folders(self):
-        """Refresh the folder list in the folder tree."""
-        if hasattr(self, 'folder_tree'):
-            folders = self.parent.email_manager.list_folders()
-            self.folder_tree.update_folders(folders)
-    
-    @handle_errors
-    def on_account_selection_changed(self):
-        """Update folder tree when account selection changes."""
-        selected_items = self.accounts_table.selectedItems()
-        if not selected_items:
-            # Clear folder tree if no account selected
-            self.folder_tree.clear()
-            return
-        
-        # Get selected account email
-        email = selected_items[0].text()
-        account_data = next((acc for acc in self.accounts if acc['email'] == email), None)
-        if not account_data:
-            return
-        
-        # Update folder tree if email manager exists
-        if hasattr(self.parent, 'email_manager'):
-            folders = self.parent.email_manager.list_folders()
-            self.folder_tree.update_folders(folders)

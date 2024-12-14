@@ -512,3 +512,129 @@ class EmailManager:
     def get_attachment_storage_info(self):
         """Get information about attachment storage."""
         return self.attachment_manager.get_storage_info()
+    
+    def create_folder(self, folder_name: str) -> bool:
+        """
+        Create a new email folder/mailbox.
+        
+        Args:
+            folder_name (str): Name of the folder to create
+            
+        Returns:
+            bool: True if folder was created successfully, False otherwise
+        """
+        logger.logger.debug(f"Creating folder: {folder_name}")
+        if not self.imap_connection:
+            if not self.connect_imap():
+                return False
+        
+        try:
+            result = self.imap_connection.create(folder_name)
+            success = result[0] == 'OK'
+            if success:
+                logger.logger.info(f"Created folder: {folder_name}")
+            else:
+                logger.logger.error(f"Failed to create folder: {folder_name}")
+            return success
+        except Exception as e:
+            logger.logger.error(f"Error creating folder {folder_name}: {str(e)}")
+            return False
+    
+    def delete_folder(self, folder_name: str) -> bool:
+        """
+        Delete an email folder/mailbox.
+        
+        Args:
+            folder_name (str): Name of the folder to delete
+            
+        Returns:
+            bool: True if folder was deleted successfully, False otherwise
+        """
+        logger.logger.debug(f"Deleting folder: {folder_name}")
+        if not self.imap_connection:
+            if not self.connect_imap():
+                return False
+        
+        try:
+            # First, select a different folder if the current one is being deleted
+            if self.current_folder == folder_name:
+                self.select_folder('INBOX')
+            
+            result = self.imap_connection.delete(folder_name)
+            success = result[0] == 'OK'
+            if success:
+                logger.logger.info(f"Deleted folder: {folder_name}")
+            else:
+                logger.logger.error(f"Failed to delete folder: {folder_name}")
+            return success
+        except Exception as e:
+            logger.logger.error(f"Error deleting folder {folder_name}: {str(e)}")
+            return False
+    
+    def rename_folder(self, old_name: str, new_name: str) -> bool:
+        """
+        Rename an email folder/mailbox.
+        
+        Args:
+            old_name (str): Current folder name
+            new_name (str): New folder name
+            
+        Returns:
+            bool: True if folder was renamed successfully, False otherwise
+        """
+        logger.logger.debug(f"Renaming folder from {old_name} to {new_name}")
+        if not self.imap_connection:
+            if not self.connect_imap():
+                return False
+        
+        try:
+            result = self.imap_connection.rename(old_name, new_name)
+            success = result[0] == 'OK'
+            if success:
+                # Update current folder if it was renamed
+                if self.current_folder == old_name:
+                    self.current_folder = new_name
+                logger.logger.info(f"Renamed folder from {old_name} to {new_name}")
+            else:
+                logger.logger.error(f"Failed to rename folder from {old_name} to {new_name}")
+            return success
+        except Exception as e:
+            logger.logger.error(f"Error renaming folder {old_name} to {new_name}: {str(e)}")
+            return False
+    
+    def move_email(self, message_id: str, target_folder: str) -> bool:
+        """
+        Move an email message to another folder.
+        
+        Args:
+            message_id (str): ID of the message to move
+            target_folder (str): Name of the target folder
+            
+        Returns:
+            bool: True if move was successful, False otherwise
+        """
+        logger.logger.debug(f"Moving message {message_id} to folder {target_folder}")
+        
+        if not self.imap_connection:
+            if not self.connect_imap():
+                return False
+        
+        try:
+            # Copy message to target folder
+            result = self.imap_connection.copy(message_id, target_folder)
+            if result[0] != 'OK':
+                logger.logger.error(f"Failed to copy message to {target_folder}")
+                return False
+            
+            # Mark original for deletion
+            self.imap_connection.store(message_id, '+FLAGS', '\\Deleted')
+            
+            # Expunge to remove deleted messages
+            self.imap_connection.expunge()
+            
+            logger.logger.info(f"Successfully moved message {message_id} to {target_folder}")
+            return True
+            
+        except Exception as e:
+            logger.logger.error(f"Error moving message {message_id} to {target_folder}: {str(e)}")
+            return False
