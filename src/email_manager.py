@@ -5,6 +5,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 import ssl
+from email_cache import EmailCache
 
 class EmailManager:
     """
@@ -23,6 +24,9 @@ class EmailManager:
         self.imap_connection = None
         self.smtp_connection = None
         self.current_folder = None
+        
+        # Initialize email cache
+        self.cache = EmailCache()
     
     def connect_imap(self):
         """
@@ -189,7 +193,7 @@ class EmailManager:
             print(f"Error getting folder status: {str(e)}")
             return None
     
-    def fetch_emails(self, folder=None, limit=50, offset=0):
+    def fetch_emails(self, folder=None, limit=50, offset=0, use_cache=True):
         """
         Fetch emails from the specified folder.
         
@@ -197,6 +201,7 @@ class EmailManager:
             folder (str, optional): Email folder to fetch from. If None, uses current folder
             limit (int): Maximum number of emails to fetch
             offset (int): Number of emails to skip from the start
+            use_cache (bool): Whether to use cached emails when offline
         
         Returns:
             list: List of email data dictionaries
@@ -209,6 +214,20 @@ class EmailManager:
                 return []
         
         try:
+            if not self.imap_connection and use_cache:
+                # Return cached emails if offline
+                logger.logger.info(f"Using cached emails for {folder}")
+                return self.cache.get_cached_emails(
+                    self.account_data['email'],
+                    folder,
+                    limit,
+                    offset
+                )
+            
+            if not self.imap_connection:
+                if not self.connect_imap():
+                    return []
+            
             _, messages = self.imap_connection.search(None, "ALL")
             email_list = []
             
@@ -223,40 +242,120 @@ class EmailManager:
                 email_message = email.message_from_bytes(msg_data[0][1])
                 
                 # Extract email data
-                subject = email.header.decode_header(email_message["subject"])[0][0]
-                if isinstance(subject, bytes):
-                    subject = subject.decode()
+                email_data = self._parse_email_message(email_message, num)
+                email_data['folder'] = self.current_folder
                 
-                from_addr = email.header.decode_header(email_message["from"])[0][0]
-                if isinstance(from_addr, bytes):
-                    from_addr = from_addr.decode()
+                # Cache the email
+                if use_cache:
+                    self.cache.cache_email(
+                        self.account_data['email'],
+                        self.current_folder,
+                        email_data
+                    )
                 
-                date_str = email_message["date"]
-                date = datetime.strptime(date_str, "%a, %d %b %Y %H:%M:%S %z")
-                
-                # Get email body
-                body = ""
-                if email_message.is_multipart():
-                    for part in email_message.walk():
-                        if part.get_content_type() == "text/plain":
-                            body = part.get_payload(decode=True).decode()
-                            break
-                else:
-                    body = email_message.get_payload(decode=True).decode()
-                
-                email_list.append({
-                    "subject": subject,
-                    "from": from_addr,
-                    "date": date,
-                    "body": body,
-                    "message_id": num,
-                    "folder": self.current_folder
-                })
+                email_list.append(email_data)
             
             return email_list
+            
         except Exception as e:
-            print(f"Error fetching emails: {str(e)}")
+            logger.log_error(e, {'context': 'Fetching emails'})
+            if use_cache:
+                # Try to get cached emails on error
+                return self.cache.get_cached_emails(
+                    self.account_data['email'],
+                    folder,
+                    limit,
+                    offset
+                )
             return []
+    
+    def _parse_email_message(self, email_message, message_id):
+        """Parse email message into a dictionary format."""
+        # Extract basic metadata
+        subject = email.header.decode_header(email_message["subject"])[0][0]
+        if isinstance(subject, bytes):
+            subject = subject.decode()
+        
+        from_addr = email.header.decode_header(email_message["from"])[0][0]
+        if isinstance(from_addr, bytes):
+            from_addr = from_addr.decode()
+        
+        date_str = email_message["date"]
+        date = datetime.strptime(date_str, "%a, %d %b %Y %H:%M:%S %z")
+        
+        # Extract recipients
+        recipients = {
+            'to': self._get_addresses(email_message.get_all('to', [])),
+            'cc': self._get_addresses(email_message.get_all('cc', [])),
+            'bcc': self._get_addresses(email_message.get_all('bcc', []))
+        }
+        
+        # Get email body and attachments
+        body = ""
+        attachments = []
+        
+        if email_message.is_multipart():
+            for part in email_message.walk():
+                if part.get_content_type() == "text/plain":
+                    body = part.get_payload(decode=True).decode()
+                elif part.get_content_maintype() != 'multipart':
+                    # Handle attachment
+                    filename = part.get_filename()
+                    if filename:
+                        attachments.append({
+                            'filename': filename,
+                            'content_type': part.get_content_type(),
+                            'content': part.get_payload(decode=True)
+                        })
+        else:
+            body = email_message.get_payload(decode=True).decode()
+        
+        # Get flags/status
+        flags = []
+        if hasattr(email_message, 'flags'):
+            flags = [str(flag) for flag in email_message.flags]
+        
+        return {
+            "message_id": message_id,
+            "subject": subject,
+            "from": from_addr,
+            "recipients": recipients,
+            "date": date,
+            "body": body,
+            "attachments": attachments,
+            "flags": flags,
+            "metadata": {
+                "headers": dict(email_message.items()),
+                "content_type": email_message.get_content_type()
+            }
+        }
+    
+    def _get_addresses(self, address_list):
+        """Extract email addresses from address list."""
+        if not address_list:
+            return []
+        
+        addresses = []
+        for addr in address_list:
+            if isinstance(addr, str):
+                addresses.append(addr)
+            else:
+                _, addr = email.utils.parseaddr(addr)
+                if addr:
+                    addresses.append(addr)
+        return addresses
+    
+    def clear_old_cache(self, days=30):
+        """Clear old cached emails."""
+        self.cache.clear_old_cache(days)
+    
+    def get_cache_info(self):
+        """Get cache size and statistics."""
+        return self.cache.get_cache_size()
+    
+    def clear_cache(self):
+        """Clear all cached data."""
+        self.cache.clear_cache()
     
     def send_email(self, to_addr, subject, body):
         """
