@@ -35,10 +35,10 @@
 - ✅ Create email account dialog UI
 - ✅ Implement IMAP/SMTP connection handling
 - ✅ Create account configuration storage
-- ✅ Implement account testing functionality
-  - ✅ Test IMAP connection
-  - ✅ Test SMTP connection
-  - ✅ Validate server settings
+- 📅 Implement account testing functionality
+  - 📅 Test IMAP connection
+  - 📅 Test SMTP connection
+  - 📅 Validate server settings
 - 📅 Add account editing capabilities
 - 📅 Add account deletion with confirmation
 - ✅ Implement secure password storage
