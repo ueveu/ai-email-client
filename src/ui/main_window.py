@@ -3,8 +3,9 @@ Main application window integrating all UI components.
 """
 
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QSystemTrayIcon,
-                           QMenu, QMenuBar, QToolBar, QDockWidget, QApplication, QDialog, QDialogButtonBox, QMessageBox)
-from PyQt6.QtCore import Qt, QSize, QSettings
+                           QMenu, QMenuBar, QToolBar, QDockWidget, QApplication, QDialog, QDialogButtonBox, QMessageBox,
+                           QInputDialog, QLineEdit)
+from PyQt6.QtCore import Qt, QSize, QSettings, QTimer
 from PyQt6.QtGui import QIcon, QAction
 import qtawesome as qta
 import threading
@@ -23,6 +24,8 @@ from .status_bar_widget import StatusBarWidget
 from .settings_dialog import SettingsDialog
 from utils.logger import logger
 from .loading_spinner import LoadingSpinner
+from services.network_service import NetworkService
+from .email_analysis_tab import EmailAnalysisTab
 
 class MainWindow(QMainWindow):
     """Main application window."""
@@ -37,13 +40,14 @@ class MainWindow(QMainWindow):
         self.theme_service = ThemeService()
         self.ai_service = AIService()
         self.credential_service = CredentialService()
+        self.network_service = NetworkService()
         
         # Initialize email management
         self.account_manager = AccountManager()
         self.email_manager = None  # Will be set when account is selected
         
         # Add loading indicators
-        self.loading_indicator = LoadingSpinner()
+        self.loading_indicator = LoadingSpinner(self)
         
         # Set up UI
         self.setup_ui()
@@ -55,6 +59,9 @@ class MainWindow(QMainWindow):
         
         # Load accounts and connect if auto-connect is enabled
         self.load_accounts()
+        
+        # Set up network monitoring
+        self._setup_network_monitoring()
     
     def setup_ui(self):
         """Set up the main window UI."""
@@ -74,6 +81,10 @@ class MainWindow(QMainWindow):
         
         # Tool bar
         self.create_tool_bar()
+        
+        # Create email analysis tab
+        self.email_analysis_tab = EmailAnalysisTab(self)
+        layout.addWidget(self.email_analysis_tab)
         
         # Status bar
         self.status_bar = StatusBarWidget(
@@ -138,6 +149,15 @@ class MainWindow(QMainWindow):
             lambda checked: self.status_bar.toggle_section('operations', checked)
         )
         view_menu.addAction(toggle_operations)
+        
+        # AI menu
+        ai_menu = menubar.addMenu("&AI")
+        
+        # Gemini API key action
+        gemini_api_action = QAction("Configure Gemini API Key...", self)
+        gemini_api_action.setStatusTip("Set up or validate your Gemini API key")
+        gemini_api_action.triggered.connect(self.configure_gemini_api)
+        ai_menu.addAction(gemini_api_action)
         
         # Help menu
         help_menu = menubar.addMenu("&Help")
@@ -279,96 +299,39 @@ class MainWindow(QMainWindow):
         # Log the error
         logger.error(f"Error handled by MainWindow: {error_type} - {error_message}")
     
-    def authenticate_account(self, email: str) -> bool:
-        """
-        Authenticate an email account.
-        
-        Args:
-            email (str): Email address to authenticate
-            
-        Returns:
-            bool: True if authentication successful
-        """
+    def authenticate_account(self, email: str):
+        """Authenticate and connect to an email account."""
         try:
-            # Get account data
+            # Get account credentials
             account_data = self.account_manager.get_account(email)
             if not account_data:
-                self.notification_service.show_notification(
-                    "Authentication Error",
-                    f"Account {email} not found",
-                    NotificationType.ERROR
-                )
-                return False
+                logger.error(f"No account data found for {email}")
+                return
             
-            # Check provider type
-            provider = EmailProviders.detect_provider(email)
+            # Create email manager instance
+            self.email_manager = EmailManager(
+                account_data,
+                self.credential_service,
+                self.operation_service
+            )
             
-            # Handle Gmail OAuth
-            if provider == Provider.GMAIL:
-                # Check for existing OAuth tokens
-                tokens = self.credential_service.get_oauth_tokens(email)
-                if not tokens:
-                    # Show authentication dialog
-                    from .email_account_dialog import EmailAccountDialog
-                    dialog = EmailAccountDialog(self)
-                    dialog.email_input.setText(email)
-                    dialog.quick_setup(Provider.GMAIL)
-                    if not dialog.exec():
-                        return False
-                    
-                    # Get fresh tokens
-                    tokens = self.credential_service.get_oauth_tokens(email)
-                    if not tokens:
-                        return False
-                    
-                    # Update account data with new tokens
-                    account_data['oauth_tokens'] = tokens
-            else:
-                # Check for password
-                credentials = self.credential_service.get_email_credentials(email)
-                if not credentials or 'password' not in credentials:
-                    # Show authentication dialog
-                    from .email_account_dialog import EmailAccountDialog
-                    dialog = EmailAccountDialog(self)
-                    dialog.email_input.setText(email)
-                    if not dialog.exec():
-                        return False
-                    
-                    # Get fresh credentials
-                    credentials = self.credential_service.get_email_credentials(email)
-                    if not credentials:
-                        return False
-                    
-                    # Update account data with password
-                    account_data['password'] = credentials['password']
+            # Set email manager in analysis tab
+            self.email_analysis_tab.set_email_manager(self.email_manager)
             
-            # Create email manager with authenticated account
-            self.email_manager = EmailManager(account_data)
-            
-            # Test connection
-            if not self.email_manager.connect_imap():
-                raise ConnectionError("Failed to connect to IMAP server")
-            if not self.email_manager.connect_smtp():
-                raise ConnectionError("Failed to connect to SMTP server")
-            
-            # Update UI
-            self.setWindowTitle(f"AI Email Assistant - {email}")
+            # Show success notification
             self.notification_service.show_notification(
                 "Connected",
                 f"Successfully connected to {email}",
                 NotificationType.SUCCESS
             )
             
-            return True
-            
         except Exception as e:
-            logger.error(f"Authentication error for {email}: {str(e)}")
+            logger.error(f"Error authenticating account: {str(e)}")
             self.notification_service.show_notification(
-                "Authentication Error",
-                f"Failed to authenticate {email}: {str(e)}",
+                "Connection Error",
+                f"Failed to connect to {email}: {str(e)}",
                 NotificationType.ERROR
             )
-            return False
     
     def load_accounts(self):
         """Load email accounts and connect if auto-connect is enabled."""
@@ -433,3 +396,118 @@ class MainWindow(QMainWindow):
         # Move to background thread
         self.loading_indicator.start()
         threading.Thread(target=self._async_refresh).start()
+    
+    def _setup_network_monitoring(self):
+        """Set up network connectivity monitoring."""
+        # Create timer for network checks
+        self.network_timer = QTimer(self)
+        self.network_timer.timeout.connect(self._check_network_status)
+        self.network_timer.start(30000)  # Check every 30 seconds
+        
+        # Initial check
+        self._check_network_status()
+    
+    def _check_network_status(self):
+        """Check network connectivity status."""
+        is_online = self.network_service.check_connectivity()
+        
+        # Update UI
+        self.status_bar.set_online_status(is_online)
+        
+        if not is_online and not self.offline_action.isChecked():
+            # Automatically switch to offline mode
+            self.offline_action.setChecked(True)
+            self.toggle_offline_mode()
+            
+            # Notify user
+            self.notification_service.add_notification(
+                "Network Connection Lost",
+                "Switched to offline mode. Using cached emails.",
+                "warning"
+            )
+        elif is_online and self.offline_action.isChecked():
+            # Ask user if they want to go back online
+            reply = QMessageBox.question(
+                self,
+                "Network Connection Available",
+                "Network connection is available. Would you like to go back online?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                self.offline_action.setChecked(False)
+                self.toggle_offline_mode()
+    
+    def toggle_offline_mode(self):
+        """Toggle offline mode."""
+        is_offline = self.offline_action.isChecked()
+        
+        # Update email manager
+        if hasattr(self.email_tab, 'email_manager'):
+            self.email_tab.email_manager.set_offline_mode(is_offline)
+        
+        # Update UI
+        self.status_bar.set_online_status(not is_offline)
+        
+        # Refresh emails in current view
+        self.email_tab.refresh_emails()
+        
+        # Show notification
+        mode = "offline" if is_offline else "online"
+        self.notification_service.add_notification(
+            f"Switched to {mode} mode",
+            f"Now working in {mode} mode",
+            "info"
+        )
+    
+    def configure_gemini_api(self):
+        """Configure and validate Gemini API key."""
+        # Get current API key if exists
+        current_key = self.ai_service.api_key_service.get_api_key('gemini') or ""
+        
+        # Show input dialog
+        api_key, ok = QInputDialog.getText(
+            self,
+            "Gemini API Key Configuration",
+            "Enter your Gemini API key:\n(Get it from https://makersuite.google.com/app/apikey)",
+            QLineEdit.EchoMode.Password,
+            current_key
+        )
+        
+        if ok and api_key:
+            # Show loading indicator
+            self.loading_indicator.start()
+            
+            try:
+                # Test the API key
+                if self.ai_service.test_api_key(api_key):
+                    # Save the valid key
+                    self.ai_service.update_api_key(api_key)
+                    
+                    QMessageBox.information(
+                        self,
+                        "Success",
+                        "Gemini API key validated and saved successfully!"
+                    )
+                    
+                    # Show success notification
+                    self.notification_service.show_notification(
+                        "API Key Updated",
+                        "Gemini API key has been validated and saved.",
+                        NotificationType.SUCCESS
+                    )
+                else:
+                    QMessageBox.warning(
+                        self,
+                        "Invalid API Key",
+                        "The provided API key is invalid. Please check your key and try again."
+                    )
+            except Exception as e:
+                logger.error(f"Error validating Gemini API key: {str(e)}")
+                QMessageBox.critical(
+                    self,
+                    "Error",
+                    f"An error occurred while validating the API key: {str(e)}"
+                )
+            finally:
+                self.loading_indicator.stop()

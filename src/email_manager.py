@@ -16,6 +16,8 @@ import os
 import mimetypes
 from utils.logger import logger
 from utils.error_handler import ErrorCollection, handle_errors, collect_errors
+from PyQt6.QtCore import QSettings
+from typing import Optional
 
 class EmailManager:
     """
@@ -35,6 +37,14 @@ class EmailManager:
         self.imap_connection = None
         self.smtp_connection = None
         self.current_folder = None
+        self.is_offline = False
+        
+        # Load settings
+        settings = QSettings('AI Email Assistant', 'Settings')
+        self.use_cache = settings.value('cache/enabled', True, bool)
+        self.cache_attachments = settings.value('cache/attachments', True, bool)
+        self.cache_retention = settings.value('cache/retention_days', 30, int)
+        self.cache_size_limit = settings.value('cache/size_limit_mb', 1000, int) * 1024 * 1024  # Convert to bytes
         
         # Initialize managers
         self.cache = EmailCache()
@@ -44,6 +54,342 @@ class EmailManager:
         # Detect provider
         self.provider = EmailProviders.detect_provider(account_data['email'])
         self.provider_config = EmailProviders.get_provider_config(self.provider)
+        
+        # Check cache size and clean if needed
+        self._check_cache_size()
+    
+    def _check_cache_size(self):
+        """Check cache size and clean if over limit."""
+        try:
+            cache_info = self.cache.get_cache_size()
+            if cache_info['total_size'] > self.cache_size_limit:
+                logger.info("Cache size over limit, cleaning old data")
+                self.clear_old_cache(self.cache_retention)
+        except Exception as e:
+            logger.error(f"Error checking cache size: {str(e)}")
+    
+    def set_offline_mode(self, offline: bool):
+        """
+        Set offline mode status.
+        
+        Args:
+            offline (bool): Whether to enable offline mode
+        """
+        self.is_offline = offline
+        if offline:
+            # Close connections in offline mode
+            self._close_connections()
+    
+    def _close_connections(self):
+        """Close all active connections."""
+        if self.imap_connection:
+            try:
+                self.imap_connection.close()
+                self.imap_connection.logout()
+            except:
+                pass
+            finally:
+                self.imap_connection = None
+        
+        if self.smtp_connection:
+            try:
+                self.smtp_connection.quit()
+            except:
+                pass
+            finally:
+                self.smtp_connection = None
+    
+    @handle_errors
+    def fetch_emails(self, folder=None, limit=50, offset=0, use_cache=None, thread=True, error_collection=None):
+        """
+        Fetch emails from the specified folder.
+        
+        Args:
+            folder (str, optional): Email folder to fetch from. If None, uses current folder
+            limit (int): Maximum number of emails to fetch
+            offset (int): Number of emails to skip from the start
+            use_cache (bool, optional): Whether to use cached emails. If None, uses setting
+            thread (bool): Whether to group emails into conversation threads
+            error_collection (ErrorCollection, optional): Collection to store multiple errors
+            
+        Returns:
+            list: List of email data dictionaries or EmailThread objects
+        """
+        logger.debug(f"Fetching emails from folder: {folder}, limit: {limit}, offset: {offset}, use_cache: {use_cache}, thread: {thread}")
+        
+        # Use class setting if use_cache not specified
+        if use_cache is None:
+            use_cache = self.use_cache
+        
+        # Force cache usage in offline mode
+        if self.is_offline:
+            use_cache = True
+        
+        # Fetch emails
+        @collect_errors(error_collection, "Fetch Base Emails")
+        def fetch_base():
+            return self._fetch_emails_base(folder, limit, offset, use_cache, error_collection)
+        emails = fetch_base()
+        
+        if not emails:
+            return []
+        
+        logger.debug(f"Fetched {len(emails)} base emails")
+        
+        # Return threaded or unthreaded emails based on parameter
+        if thread:
+            logger.debug("Threading emails")
+            @collect_errors(error_collection, "Process Email Threading")
+            def process_threading():
+                self.thread_manager.process_emails(emails)
+                return self.thread_manager.threads
+            threads = process_threading()
+            logger.debug(f"Created {len(threads) if threads else 0} email threads")
+            return threads or []
+        return emails
+    
+    def _fetch_emails_base(self, folder=None, limit=50, offset=0, use_cache=True, error_collection=None):
+        """Base method for fetching emails without threading."""
+        logger.debug(f"Base fetch - folder: {folder}, current folder: {self.current_folder}")
+        
+        if folder and folder != self.current_folder:
+            @collect_errors(error_collection, f"Select Folder: {folder}")
+            def select_new_folder():
+                return self.select_folder(folder)
+            if not select_new_folder():
+                return []
+        elif not self.current_folder:
+            @collect_errors(error_collection, "Select INBOX")
+            def select_inbox():
+                return self.select_folder('INBOX')
+            if not select_inbox():
+                return []
+        
+        try:
+            # Check offline mode or connection status
+            if self.is_offline or (not self.imap_connection and use_cache):
+                # Return cached emails if offline
+                logger.info(f"Using cached emails for {folder} (offline mode)")
+                @collect_errors(error_collection, "Get Cached Emails")
+                def get_cached():
+                    return self.cache.get_cached_emails(
+                        self.account_data['email'],
+                        folder,
+                        limit,
+                        offset
+                    )
+                cached_emails = get_cached()
+                logger.debug(f"Retrieved {len(cached_emails) if cached_emails else 0} cached emails")
+                return cached_emails or []
+            
+            # Try to connect if not in offline mode
+            if not self.imap_connection:
+                @collect_errors(error_collection, "Connect IMAP")
+                def connect():
+                    return self.connect_imap()
+                if not connect():
+                    if use_cache:
+                        # Fall back to cache on connection failure
+                        logger.info("Connection failed, falling back to cache")
+                        return self.cache.get_cached_emails(
+                            self.account_data['email'],
+                            folder,
+                            limit,
+                            offset
+                        )
+                    return []
+            
+            # Fetch new emails
+            @collect_errors(error_collection, "Search Messages")
+            def search_messages():
+                _, messages = self.imap_connection.search(None, "ALL")
+                return messages[0].split()
+            message_numbers = search_messages()
+            
+            if not message_numbers:
+                return []
+            
+            message_numbers.reverse()  # Reverse to get newest first
+            start_index = offset
+            end_index = min(offset + limit, len(message_numbers))
+            
+            logger.debug(f"Processing messages {start_index} to {end_index} of {len(message_numbers)}")
+            
+            email_list = []
+            for num in message_numbers[start_index:end_index]:
+                @collect_errors(error_collection, f"Fetch Message {num}")
+                def fetch_message():
+                    _, msg_data = self.imap_connection.fetch(num, "(RFC822)")
+                    email_message = email.message_from_bytes(msg_data[0][1])
+                    
+                    # Extract email data
+                    email_data = self._parse_email_message(email_message, num)
+                    email_data['folder'] = self.current_folder
+                    
+                    # Cache the email if enabled
+                    if use_cache and self.use_cache:
+                        self.cache.cache_email(
+                            self.account_data['email'],
+                            self.current_folder,
+                            email_data
+                        )
+                    
+                    email_list.append(email_data)
+                fetch_message()
+            
+            logger.debug(f"Successfully fetched {len(email_list)} emails")
+            return email_list
+            
+        except Exception as e:
+            if error_collection:
+                error_collection.add(f"Error in _fetch_emails_base: {str(e)}")
+            logger.error(f"Error in _fetch_emails_base: {str(e)}")
+            if use_cache:
+                # Try to get cached emails on error
+                logger.info("Attempting to retrieve cached emails after error")
+                @collect_errors(error_collection, "Get Cached Emails After Error")
+                def get_cached_after_error():
+                    return self.cache.get_cached_emails(
+                        self.account_data['email'],
+                        folder,
+                        limit,
+                        offset
+                    )
+                cached_emails = get_cached_after_error()
+                logger.debug(f"Retrieved {len(cached_emails) if cached_emails else 0} cached emails after error")
+                return cached_emails or []
+            return []
+    
+    def _parse_email_message(self, email_message, message_id):
+        """Parse email message into a dictionary format."""
+        # Extract basic metadata
+        subject = email.header.decode_header(email_message["subject"])[0][0]
+        if isinstance(subject, bytes):
+            subject = subject.decode()
+        
+        from_addr = email.header.decode_header(email_message["from"])[0][0]
+        if isinstance(from_addr, bytes):
+            from_addr = from_addr.decode()
+        
+        date_str = email_message["date"]
+        date = datetime.strptime(date_str, "%a, %d %b %Y %H:%M:%S %z")
+        
+        # Extract recipients
+        recipients = {
+            'to': self._get_addresses(email_message.get_all('to', [])),
+            'cc': self._get_addresses(email_message.get_all('cc', [])),
+            'bcc': self._get_addresses(email_message.get_all('bcc', []))
+        }
+        
+        # Get email body and attachments
+        body = ""
+        attachments = []
+        
+        if email_message.is_multipart():
+            for part in email_message.walk():
+                if part.get_content_type() == "text/plain":
+                    body = part.get_payload(decode=True).decode()
+                elif part.get_content_maintype() != 'multipart':
+                    # Handle attachment
+                    filename = part.get_filename()
+                    if filename:
+                        attachments.append({
+                            'filename': filename,
+                            'content_type': part.get_content_type(),
+                            'content': part.get_payload(decode=True)
+                        })
+        else:
+            body = email_message.get_payload(decode=True).decode()
+        
+        # Save attachments and get their info
+        if attachments:
+            attachments = self.attachment_manager.save_attachments(
+                self.account_data['email'],
+                str(message_id),
+                attachments
+            )
+        
+        # Get flags/status
+        flags = []
+        if hasattr(email_message, 'flags'):
+            flags = [str(flag) for flag in email_message.flags]
+        
+        return {
+            "message_id": message_id,
+            "subject": subject,
+            "from": from_addr,
+            "recipients": recipients,
+            "date": date,
+            "body": body,
+            "attachments": attachments,
+            "flags": flags,
+            "metadata": {
+                "headers": dict(email_message.items()),
+                "content_type": email_message.get_content_type()
+            }
+        }
+    
+    def _get_addresses(self, address_list):
+        """Extract email addresses from address list."""
+        if not address_list:
+            return []
+        
+        addresses = []
+        for addr in address_list:
+            if isinstance(addr, str):
+                addresses.append(addr)
+            else:
+                _, addr = email.utils.parseaddr(addr)
+                if addr:
+                    addresses.append(addr)
+        return addresses
+    
+    def clear_old_cache(self, days=None):
+        """
+        Clear old cached emails.
+        
+        Args:
+            days (int, optional): Days to keep in cache. If None, uses setting
+        """
+        if days is None:
+            days = self.cache_retention
+        self.cache.clear_old_cache(days)
+        self._check_cache_size()
+    
+    def get_cache_info(self):
+        """
+        Get cache size and statistics.
+        
+        Returns:
+            dict: Cache information
+        """
+        return self.cache.get_cache_size()
+    
+    def clear_cache(self):
+        """Clear all cached data."""
+        self.cache.clear_cache()
+    
+    def update_cache_settings(self, enabled: bool, cache_attachments: bool,
+                            retention_days: int, size_limit_mb: int):
+        """
+        Update cache settings.
+        
+        Args:
+            enabled (bool): Whether to enable caching
+            cache_attachments (bool): Whether to cache attachments
+            retention_days (int): Days to keep cache
+            size_limit_mb (int): Maximum cache size in MB
+        """
+        self.use_cache = enabled
+        self.cache_attachments = cache_attachments
+        self.cache_retention = retention_days
+        self.cache_size_limit = size_limit_mb * 1024 * 1024  # Convert to bytes
+        
+        # Apply new settings
+        if not enabled:
+            self.clear_cache()
+        else:
+            self._check_cache_size()
     
     def connect_imap(self):
         """
@@ -441,243 +787,6 @@ class EmailManager:
                 error_collection.add(f"Error synchronizing folders: {str(e)}")
             logger.logger.error(f"Error synchronizing folders: {str(e)}")
             return False
-    
-    @handle_errors
-    def fetch_emails(self, folder=None, limit=50, offset=0, use_cache=True, thread=True, error_collection=None):
-        """
-        Fetch emails from the specified folder.
-        
-        Args:
-            folder (str, optional): Email folder to fetch from. If None, uses current folder
-            limit (int): Maximum number of emails to fetch
-            offset (int): Number of emails to skip from the start
-            use_cache (bool): Whether to use cached emails when offline
-            thread (bool): Whether to group emails into conversation threads
-            error_collection (ErrorCollection, optional): Collection to store multiple errors
-            
-        Returns:
-            list: List of email data dictionaries or EmailThread objects
-        """
-        logger.logger.debug(f"Fetching emails from folder: {folder}, limit: {limit}, offset: {offset}, use_cache: {use_cache}, thread: {thread}")
-        
-        # Fetch emails as before
-        @collect_errors(error_collection, "Fetch Base Emails")
-        def fetch_base():
-            return self._fetch_emails_base(folder, limit, offset, use_cache, error_collection)
-        emails = fetch_base()
-        
-        if not emails:
-            return []
-            
-        logger.logger.debug(f"Fetched {len(emails)} base emails")
-        
-        # Return threaded or unthreaded emails based on parameter
-        if thread:
-            logger.logger.debug("Threading emails")
-            @collect_errors(error_collection, "Process Email Threading")
-            def process_threading():
-                self.thread_manager.process_emails(emails)
-                return self.thread_manager.threads
-            threads = process_threading()
-            logger.logger.debug(f"Created {len(threads) if threads else 0} email threads")
-            return threads or []
-        return emails
-    
-    def _fetch_emails_base(self, folder=None, limit=50, offset=0, use_cache=True, error_collection=None):
-        """Base method for fetching emails without threading."""
-        logger.logger.debug(f"Base fetch - folder: {folder}, current folder: {self.current_folder}")
-        
-        if folder and folder != self.current_folder:
-            @collect_errors(error_collection, f"Select Folder: {folder}")
-            def select_new_folder():
-                return self.select_folder(folder)
-            if not select_new_folder():
-                return []
-        elif not self.current_folder:
-            @collect_errors(error_collection, "Select INBOX")
-            def select_inbox():
-                return self.select_folder('INBOX')
-            if not select_inbox():
-                return []
-        
-        try:
-            if not self.imap_connection and use_cache:
-                # Return cached emails if offline
-                logger.logger.info(f"Using cached emails for {folder}")
-                @collect_errors(error_collection, "Get Cached Emails")
-                def get_cached():
-                    return self.cache.get_cached_emails(
-                        self.account_data['email'],
-                        folder,
-                        limit,
-                        offset
-                    )
-                cached_emails = get_cached()
-                logger.logger.debug(f"Retrieved {len(cached_emails) if cached_emails else 0} cached emails")
-                return cached_emails or []
-            
-            if not self.imap_connection:
-                @collect_errors(error_collection, "Connect IMAP")
-                def connect():
-                    return self.connect_imap()
-                if not connect():
-                    return []
-            
-            @collect_errors(error_collection, "Search Messages")
-            def search_messages():
-                _, messages = self.imap_connection.search(None, "ALL")
-                return messages[0].split()
-            message_numbers = search_messages()
-            
-            if not message_numbers:
-                return []
-                
-            message_numbers.reverse()  # Reverse to get newest first
-            start_index = offset
-            end_index = min(offset + limit, len(message_numbers))
-            
-            logger.logger.debug(f"Processing messages {start_index} to {end_index} of {len(message_numbers)}")
-            
-            email_list = []
-            for num in message_numbers[start_index:end_index]:
-                @collect_errors(error_collection, f"Fetch Message {num}")
-                def fetch_message():
-                    _, msg_data = self.imap_connection.fetch(num, "(RFC822)")
-                    email_message = email.message_from_bytes(msg_data[0][1])
-                    
-                    # Extract email data
-                    email_data = self._parse_email_message(email_message, num)
-                    email_data['folder'] = self.current_folder
-                    
-                    # Cache the email
-                    if use_cache:
-                        self.cache.cache_email(
-                            self.account_data['email'],
-                            self.current_folder,
-                            email_data
-                        )
-                    
-                    email_list.append(email_data)
-                fetch_message()
-            
-            logger.logger.debug(f"Successfully fetched {len(email_list)} emails")
-            return email_list
-            
-        except Exception as e:
-            if error_collection:
-                error_collection.add(f"Error in _fetch_emails_base: {str(e)}")
-            logger.logger.error(f"Error in _fetch_emails_base: {str(e)}")
-            if use_cache:
-                # Try to get cached emails on error
-                logger.logger.info("Attempting to retrieve cached emails after error")
-                @collect_errors(error_collection, "Get Cached Emails After Error")
-                def get_cached_after_error():
-                    return self.cache.get_cached_emails(
-                        self.account_data['email'],
-                        folder,
-                        limit,
-                        offset
-                    )
-                cached_emails = get_cached_after_error()
-                logger.logger.debug(f"Retrieved {len(cached_emails) if cached_emails else 0} cached emails after error")
-                return cached_emails or []
-            return []
-    
-    def _parse_email_message(self, email_message, message_id):
-        """Parse email message into a dictionary format."""
-        # Extract basic metadata
-        subject = email.header.decode_header(email_message["subject"])[0][0]
-        if isinstance(subject, bytes):
-            subject = subject.decode()
-        
-        from_addr = email.header.decode_header(email_message["from"])[0][0]
-        if isinstance(from_addr, bytes):
-            from_addr = from_addr.decode()
-        
-        date_str = email_message["date"]
-        date = datetime.strptime(date_str, "%a, %d %b %Y %H:%M:%S %z")
-        
-        # Extract recipients
-        recipients = {
-            'to': self._get_addresses(email_message.get_all('to', [])),
-            'cc': self._get_addresses(email_message.get_all('cc', [])),
-            'bcc': self._get_addresses(email_message.get_all('bcc', []))
-        }
-        
-        # Get email body and attachments
-        body = ""
-        attachments = []
-        
-        if email_message.is_multipart():
-            for part in email_message.walk():
-                if part.get_content_type() == "text/plain":
-                    body = part.get_payload(decode=True).decode()
-                elif part.get_content_maintype() != 'multipart':
-                    # Handle attachment
-                    filename = part.get_filename()
-                    if filename:
-                        attachments.append({
-                            'filename': filename,
-                            'content_type': part.get_content_type(),
-                            'content': part.get_payload(decode=True)
-                        })
-        else:
-            body = email_message.get_payload(decode=True).decode()
-        
-        # Save attachments and get their info
-        if attachments:
-            attachments = self.attachment_manager.save_attachments(
-                self.account_data['email'],
-                str(message_id),
-                attachments
-            )
-        
-        # Get flags/status
-        flags = []
-        if hasattr(email_message, 'flags'):
-            flags = [str(flag) for flag in email_message.flags]
-        
-        return {
-            "message_id": message_id,
-            "subject": subject,
-            "from": from_addr,
-            "recipients": recipients,
-            "date": date,
-            "body": body,
-            "attachments": attachments,
-            "flags": flags,
-            "metadata": {
-                "headers": dict(email_message.items()),
-                "content_type": email_message.get_content_type()
-            }
-        }
-    
-    def _get_addresses(self, address_list):
-        """Extract email addresses from address list."""
-        if not address_list:
-            return []
-        
-        addresses = []
-        for addr in address_list:
-            if isinstance(addr, str):
-                addresses.append(addr)
-            else:
-                _, addr = email.utils.parseaddr(addr)
-                if addr:
-                    addresses.append(addr)
-        return addresses
-    
-    def clear_old_cache(self, days=30):
-        """Clear old cached emails."""
-        self.cache.clear_old_cache(days)
-    
-    def get_cache_info(self):
-        """Get cache size and statistics."""
-        return self.cache.get_cache_size()
-    
-    def clear_cache(self):
-        """Clear all cached data."""
-        self.cache.clear_cache()
     
     @handle_errors
     def send_email(self, to_addr, subject, body, cc=None, bcc=None, attachments=None, error_collection=None):
@@ -1132,3 +1241,88 @@ class EmailManager:
         except Exception as e:
             error_collection.add(f"Failed to move email: {str(e)}")
             return False
+    
+    def get_email_by_message_id(self, message_id: str) -> Optional[dict]:
+        """
+        Get an email by its message ID.
+        
+        Args:
+            message_id (str): Message ID to find
+            
+        Returns:
+            Optional[dict]: Email data if found, None otherwise
+        """
+        logger.debug(f"Looking for email with message ID: {message_id}")
+        
+        try:
+            # First check cache
+            if self.use_cache:
+                cached_email = self.cache.get_email_by_message_id(
+                    self.account_data['email'],
+                    message_id
+                )
+                if cached_email:
+                    logger.debug(f"Found email {message_id} in cache")
+                    return cached_email
+            
+            # If not in cache and we're offline, return None
+            if self.is_offline:
+                logger.debug(f"Email {message_id} not found in cache (offline mode)")
+                return None
+            
+            # Try to find in IMAP
+            if not self.imap_connection and not self.connect_imap():
+                logger.error("Could not connect to IMAP server")
+                return None
+            
+            # Search for message ID in all folders
+            for folder in self.list_folders():
+                folder_name = folder['name']
+                if not self.select_folder(folder_name):
+                    continue
+                
+                # Search for message ID
+                try:
+                    _, messages = self.imap_connection.search(
+                        None,
+                        f'HEADER Message-ID "{message_id}"'
+                    )
+                    
+                    if messages[0]:
+                        # Found the email
+                        num = messages[0].split()[0]
+                        _, msg_data = self.imap_connection.fetch(num, "(RFC822)")
+                        email_message = email.message_from_bytes(msg_data[0][1])
+                        
+                        # Parse and return email data
+                        email_data = self._parse_email_message(email_message, num)
+                        email_data['folder'] = folder_name
+                        
+                        # Cache for future use
+                        if self.use_cache:
+                            self.cache.cache_email(
+                                self.account_data['email'],
+                                folder_name,
+                                email_data
+                            )
+                        
+                        logger.debug(f"Found email {message_id} in folder {folder_name}")
+                        return email_data
+                
+                except Exception as e:
+                    logger.error(f"Error searching for message ID in {folder_name}: {str(e)}")
+                    continue
+            
+            logger.debug(f"Email {message_id} not found")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting email by message ID: {str(e)}")
+            return None
+    
+    def get_account_domain(self) -> str:
+        """Get the domain of the current email account."""
+        try:
+            return self.account_data['email'].split('@')[1]
+        except:
+            return ''

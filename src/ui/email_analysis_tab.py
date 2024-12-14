@@ -1,12 +1,14 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
                            QTreeWidget, QTreeWidgetItem, QTextEdit, QPushButton,
-                           QLabel, QComboBox, QApplication)
+                           QLabel, QComboBox, QApplication, QMessageBox)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QClipboard
 from .folder_tree import FolderTree
 from .attachment_view import AttachmentView
 from email_manager import EmailManager
 from utils.logger import logger
+from services.ai_service import AIService
+from .loading_spinner import LoadingSpinner
 
 class EmailAnalysisTab(QWidget):
     """
@@ -19,6 +21,8 @@ class EmailAnalysisTab(QWidget):
         super().__init__(parent)
         self.email_manager = None
         self.current_folder = None
+        self.ai_service = AIService()
+        self.loading_spinner = LoadingSpinner(self)
         logger.logger.debug("Initializing EmailAnalysisTab")
         self.setup_ui()
     
@@ -213,10 +217,135 @@ class EmailAnalysisTab(QWidget):
     
     def generate_reply(self):
         """Generate AI reply for the selected email."""
-        # TODO: Implement Gemini API integration
-        self.reply_suggestions.setText("AI-generated reply suggestions will appear here.")
+        if not self.email_content.toPlainText():
+            logger.warning("No email selected for reply generation")
+            return
+        
+        try:
+            # Show loading spinner
+            self.loading_spinner.start()
+            
+            # Get selected email data
+            selected_items = self.email_tree.selectedItems()
+            if not selected_items:
+                logger.warning("No email selected")
+                return
+            
+            email_data = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
+            if not email_data:
+                logger.warning("No email data found")
+                return
+            
+            # Get AI service from parent window
+            ai_service = self.parent().ai_service
+            if not ai_service or not ai_service.model:
+                QMessageBox.warning(
+                    self,
+                    "AI Service Not Available",
+                    "Please configure your Gemini API key in the AI menu first."
+                )
+                return
+            
+            # Prepare context for AI
+            context = {
+                'conversation_history': self._get_conversation_history(email_data),
+                'relationship': self._determine_relationship(email_data),
+                'tone': 'professional'  # Default tone
+            }
+            
+            # Generate reply suggestions
+            suggestions = ai_service.generate_reply(
+                email_data.get('body', ''),
+                context=context,
+                num_suggestions=3
+            )
+            
+            if suggestions:
+                # Display suggestions
+                self.reply_suggestions.clear()
+                self.reply_suggestions.append("AI Generated Reply Suggestions:\n")
+                for i, suggestion in enumerate(suggestions, 1):
+                    self.reply_suggestions.append(f"\nSuggestion {i}:\n{'-' * 40}\n{suggestion}\n")
+                
+                # Enable copy button
+                self.copy_reply_btn.setEnabled(True)
+            else:
+                self.reply_suggestions.setText("Failed to generate reply suggestions.")
+                self.copy_reply_btn.setEnabled(False)
+        
+        except Exception as e:
+            logger.error(f"Error generating reply: {str(e)}")
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to generate reply: {str(e)}"
+            )
+        finally:
+            self.loading_spinner.stop()
     
     def copy_reply(self):
-        """Copy selected reply to clipboard."""
-        clipboard = QApplication.clipboard()
-        clipboard.setText(self.reply_suggestions.toPlainText())
+        """Copy selected reply suggestion to clipboard."""
+        if self.reply_suggestions.toPlainText():
+            # Get selected text or all text if nothing is selected
+            cursor = self.reply_suggestions.textCursor()
+            text = cursor.selectedText() or self.reply_suggestions.toPlainText()
+            
+            # Copy to clipboard
+            clipboard = QApplication.clipboard()
+            clipboard.setText(text)
+            
+            # Show success message in status bar
+            if hasattr(self.parent(), 'status_bar'):
+                self.parent().status_bar.showMessage("Reply copied to clipboard", 3000)
+    
+    def _get_conversation_history(self, email_data: dict) -> str:
+        """Get conversation history for context."""
+        try:
+            # Get references and in-reply-to headers
+            references = email_data.get('references', [])
+            in_reply_to = email_data.get('in_reply_to', [])
+            
+            # Combine all message IDs
+            message_ids = list(set(references + in_reply_to))
+            
+            if not message_ids:
+                return ""
+            
+            # Get related emails from email manager
+            history = []
+            for msg_id in message_ids:
+                related_email = self.email_manager.get_email_by_message_id(msg_id)
+                if related_email:
+                    history.append(
+                        f"On {related_email['date']}, {related_email['from']} wrote:\n"
+                        f"{related_email['body']}\n"
+                    )
+            
+            return "\n".join(history)
+        
+        except Exception as e:
+            logger.error(f"Error getting conversation history: {str(e)}")
+            return ""
+    
+    def _determine_relationship(self, email_data: dict) -> str:
+        """Determine relationship context with sender."""
+        try:
+            sender = email_data.get('from', '')
+            
+            # Check if sender is in contacts (if implemented)
+            if hasattr(self.email_manager, 'is_contact'):
+                if self.email_manager.is_contact(sender):
+                    return 'known_contact'
+            
+            # Check domain
+            sender_domain = sender.split('@')[-1].lower()
+            our_domain = self.email_manager.get_account_domain().lower()
+            
+            if sender_domain == our_domain:
+                return 'internal'
+            
+            return 'external'
+        
+        except Exception as e:
+            logger.error(f"Error determining relationship: {str(e)}")
+            return 'unknown'

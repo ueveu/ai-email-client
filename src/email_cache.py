@@ -292,3 +292,68 @@ class EmailCache:
                 os.remove(file)
             except OSError:
                 pass 
+    
+    def get_email_by_message_id(self, account_email: str, message_id: str) -> Optional[Dict]:
+        """
+        Get a cached email by its message ID.
+        
+        Args:
+            account_email (str): Email account to search in
+            message_id (str): Message ID to find
+            
+        Returns:
+            Optional[Dict]: Email data if found in cache, None otherwise
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Get email data
+                cursor.execute("""
+                    SELECT message_id, subject, sender, recipients, date,
+                           body, has_attachments, metadata, flags
+                    FROM emails
+                    WHERE account_email = ? AND message_id = ?
+                """, (account_email, message_id))
+                
+                row = cursor.fetchone()
+                if not row:
+                    logger.debug(f"No cached email found with message ID: {message_id}")
+                    return None
+                
+                # Get attachments for this email
+                cursor.execute("""
+                    SELECT filename, content_type, size, local_path
+                    FROM attachments
+                    WHERE message_id = ?
+                """, (message_id,))
+                
+                attachments = []
+                for att_row in cursor.fetchall():
+                    attachments.append({
+                        'filename': att_row[0],
+                        'content_type': att_row[1],
+                        'size': att_row[2],
+                        'local_path': att_row[3]
+                    })
+                
+                # Build email data dictionary
+                email_data = {
+                    'message_id': row[0],
+                    'subject': row[1],
+                    'from': row[2],
+                    'recipients': json.loads(row[3]),
+                    'date': datetime.fromisoformat(row[4]),
+                    'body': row[5],
+                    'has_attachments': bool(row[6]),
+                    'metadata': json.loads(row[7]),
+                    'flags': json.loads(row[8]),
+                    'attachments': attachments
+                }
+                
+                logger.debug(f"Found cached email with message ID: {message_id}")
+                return email_data
+                
+        except Exception as e:
+            logger.error(f"Error getting cached email by message ID: {str(e)}")
+            return None

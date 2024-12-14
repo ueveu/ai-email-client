@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
                            QPushButton, QGroupBox, QFormLayout, QDialogButtonBox,
                            QLineEdit, QScrollArea, QColorDialog, QFileDialog,
                            QTreeWidget, QTreeWidgetItem, QKeySequenceEdit,
-                           QFrame)
+                           QFrame, QMessageBox)
 from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtGui import QColor, QKeySequence
 import json
@@ -17,6 +17,7 @@ from services.credential_service import CredentialService
 from services.ai_service import AIService
 from services.theme_service import ThemeService
 from services.shortcut_service import ShortcutService
+from utils.size_formatter import format_size
 
 class SettingsDialog(QDialog):
     """Dialog for managing application settings and preferences."""
@@ -54,6 +55,7 @@ class SettingsDialog(QDialog):
         tab_widget.addTab(self.create_ai_tab(), "AI Settings")
         tab_widget.addTab(self.create_security_tab(), "Security")
         tab_widget.addTab(self.create_accounts_tab(), "Email Accounts")
+        tab_widget.addTab(self.create_cache_tab(), "Cache")
         
         layout.addWidget(tab_widget)
         
@@ -807,3 +809,148 @@ class SettingsDialog(QDialog):
                 
         except Exception as e:
             logger.error(f"Error exporting theme: {str(e)}") 
+    
+    def create_cache_tab(self) -> QWidget:
+        """Create the cache settings tab."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
+        # Cache Status
+        status_group = QGroupBox("Cache Status")
+        status_layout = QFormLayout()
+        
+        # Get cache info from email manager
+        try:
+            email_manager = self.parent().email_manager
+            if email_manager:
+                cache_info = email_manager.get_cache_info()
+                email_count = cache_info['email_count']
+                attachment_count = cache_info['attachment_count']
+                total_size = format_size(cache_info['total_size'])
+            else:
+                email_count = 0
+                attachment_count = 0
+                total_size = "0 B"
+        except Exception as e:
+            logger.error(f"Error getting cache info: {str(e)}")
+            email_count = 0
+            attachment_count = 0
+            total_size = "Unknown"
+        
+        status_layout.addRow("Cached Emails:", QLabel(str(email_count)))
+        status_layout.addRow("Cached Attachments:", QLabel(str(attachment_count)))
+        status_layout.addRow("Total Cache Size:", QLabel(total_size))
+        status_group.setLayout(status_layout)
+        layout.addWidget(status_group)
+        
+        # Cache Settings
+        settings_group = QGroupBox("Cache Settings")
+        settings_layout = QFormLayout()
+        
+        self.enable_cache = QCheckBox("Enable email caching")
+        self.cache_attachments = QCheckBox("Cache attachments")
+        self.cache_retention = QSpinBox()
+        self.cache_retention.setRange(1, 365)
+        self.cache_retention.setSuffix(" days")
+        self.cache_size_limit = QSpinBox()
+        self.cache_size_limit.setRange(100, 10000)
+        self.cache_size_limit.setSuffix(" MB")
+        
+        settings_layout.addRow(self.enable_cache)
+        settings_layout.addRow(self.cache_attachments)
+        settings_layout.addRow("Keep cache for:", self.cache_retention)
+        settings_layout.addRow("Maximum cache size:", self.cache_size_limit)
+        settings_group.setLayout(settings_layout)
+        layout.addWidget(settings_group)
+        
+        # Cache Actions
+        actions_group = QGroupBox("Cache Actions")
+        actions_layout = QVBoxLayout()
+        
+        clear_cache_btn = QPushButton("Clear Cache")
+        clear_cache_btn.clicked.connect(self.clear_cache)
+        actions_layout.addWidget(clear_cache_btn)
+        
+        clear_old_btn = QPushButton("Clear Old Cache")
+        clear_old_btn.clicked.connect(self.clear_old_cache)
+        actions_layout.addWidget(clear_old_btn)
+        
+        actions_group.setLayout(actions_layout)
+        layout.addWidget(actions_group)
+        
+        layout.addStretch()
+        return tab
+    
+    def clear_cache(self):
+        """Clear all cached data."""
+        reply = QMessageBox.question(
+            self,
+            "Clear Cache",
+            "Are you sure you want to clear all cached data?\n"
+            "This will delete all cached emails and attachments.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                email_manager = self.parent().email_manager
+                if email_manager:
+                    email_manager.clear_cache()
+                    QMessageBox.information(
+                        self,
+                        "Cache Cleared",
+                        "All cached data has been cleared successfully."
+                    )
+                    # Refresh cache tab
+                    self.setup_ui()
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "Error",
+                    f"Failed to clear cache: {str(e)}"
+                )
+    
+    def clear_old_cache(self):
+        """Clear old cached data."""
+        try:
+            email_manager = self.parent().email_manager
+            if email_manager:
+                days = self.cache_retention.value()
+                email_manager.clear_old_cache(days)
+                QMessageBox.information(
+                    self,
+                    "Cache Cleared",
+                    f"Cached data older than {days} days has been cleared."
+                )
+                # Refresh cache tab
+                self.setup_ui()
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to clear old cache: {str(e)}"
+            )
+    
+    def save_settings(self):
+        """Save current settings."""
+        settings = QSettings('AI Email Assistant', 'Settings')
+        
+        # Save cache settings
+        settings.setValue('cache/enabled', self.enable_cache.isChecked())
+        settings.setValue('cache/attachments', self.cache_attachments.isChecked())
+        settings.setValue('cache/retention_days', self.cache_retention.value())
+        settings.setValue('cache/size_limit_mb', self.cache_size_limit.value())
+        
+        # Apply cache settings
+        try:
+            email_manager = self.parent().email_manager
+            if email_manager:
+                if not self.enable_cache.isChecked():
+                    email_manager.clear_cache()
+        except Exception as e:
+            logger.error(f"Error applying cache settings: {str(e)}")
+    
+    def accept(self):
+        """Handle dialog acceptance."""
+        self.save_settings()
+        super().accept() 

@@ -1,3 +1,7 @@
+"""
+Error handling utilities for the application.
+"""
+
 import sys
 import traceback
 from functools import wraps
@@ -10,41 +14,96 @@ from datetime import datetime
 
 @dataclass
 class Error:
-    """Represents a single error with timestamp and context."""
-    message: str
+    """Represents an error with timestamp and context."""
     timestamp: datetime
-    context: Dict[str, Any] = None
-    
-    def __str__(self):
-        context_str = f" ({', '.join(f'{k}: {v}' for k, v in self.context.items())})" if self.context else ""
-        return f"[{self.timestamp.strftime('%H:%M:%S')}] {self.message}{context_str}"
+    message: str
+    traceback: str
+    context: Dict[str, Any]
 
 class ErrorCollection:
-    """Collects and manages multiple errors."""
+    """Collection of errors that occurred during an operation."""
+    
     def __init__(self):
         self.errors: List[Error] = []
     
     def add(self, message: str, context: Dict[str, Any] = None):
-        """Add a new error to the collection."""
-        error = Error(message, datetime.now(), context)
+        """Add an error to the collection."""
+        error = Error(
+            timestamp=datetime.now(),
+            message=message,
+            traceback=''.join(traceback.format_stack()),
+            context=context or {}
+        )
         self.errors.append(error)
-        logger.error(str(error))
-    
-    def clear(self):
-        """Clear all collected errors."""
-        self.errors.clear()
+        logger.error(f"{message} | Context: {context}")
     
     def has_errors(self) -> bool:
-        """Check if there are any errors collected."""
+        """Check if collection has any errors."""
         return len(self.errors) > 0
     
-    def format_errors(self) -> str:
-        """Format all errors into a single string."""
-        return "\n".join(str(error) for error in self.errors)
+    def get_messages(self) -> List[str]:
+        """Get list of error messages."""
+        return [error.message for error in self.errors]
+    
+    def clear(self):
+        """Clear all errors."""
+        self.errors.clear()
+
+class ErrorHandler(QObject):
+    """
+    Central error handler for the application.
+    Manages error reporting, logging, and user notifications.
+    """
+    
+    error_occurred = pyqtSignal(str, str)  # message, details
+    
+    def __init__(self):
+        super().__init__()
+        self.error_occurred.connect(self._show_error_dialog)
+    
+    def handle_error(self, error: Exception, context: Dict[str, Any] = None):
+        """
+        Handle an error by logging it and notifying the user if needed.
+        
+        Args:
+            error: The exception that occurred
+            context: Additional context about the error
+        """
+        # Log the error
+        logger.log_error(error, context)
+        
+        # Get error details
+        error_type = type(error).__name__
+        error_message = str(error)
+        error_traceback = ''.join(traceback.format_exception(
+            type(error), error, error.__traceback__
+        ))
+        
+        # Emit signal for UI notification
+        self.error_occurred.emit(
+            f"{error_type}: {error_message}",
+            error_traceback
+        )
+    
+    def _show_error_dialog(self, message: str, details: str = None):
+        """Show error dialog to user."""
+        dialog = QMessageBox()
+        dialog.setIcon(QMessageBox.Icon.Critical)
+        dialog.setText(message)
+        dialog.setWindowTitle("Error")
+        
+        if details:
+            dialog.setDetailedText(details)
+        
+        dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        dialog.exec()
+
+# Global error handler instance
+error_handler = ErrorHandler()
 
 def handle_errors(func):
     """
-    Decorator to handle errors in functions.
+    Decorator to handle exceptions in functions.
     Logs errors and shows user-friendly messages.
     """
     @wraps(func)
@@ -52,188 +111,34 @@ def handle_errors(func):
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            # Get context information
-            context = {
+            error_handler.handle_error(e, {
                 'function': func.__name__,
-                'args': str(args),
-                'kwargs': str(kwargs)
-            }
-            
-            # Format traceback
-            tb_text = ''.join(traceback.format_exc())
-            
-            # Add error to handler's buffer
-            error_handler.add_error({
-                'type': type(e).__name__,
-                'message': str(e),
-                'traceback': tb_text,
-                'context': context
+                'args': args,
+                'kwargs': kwargs
             })
-            
-            # Show errors if we have accumulated some
-            if len(error_handler.error_buffer) >= 3:  # Show after 3 errors
-                error_handler.show_error_dialog()
-            
-            # Re-raise critical exceptions
-            if isinstance(e, (SystemExit, KeyboardInterrupt)):
-                raise
-            
             return None
-    
     return wrapper
 
-def collect_errors(error_collection: ErrorCollection, operation: str):
+def collect_errors(collection: ErrorCollection, operation: str):
     """
-    Decorator factory that adds errors to an existing collection.
-    Use this decorator when you want to collect errors from multiple operations.
+    Decorator to collect errors in an ErrorCollection.
+    Used for operations that may have multiple recoverable errors.
     """
     def decorator(func):
-        def wrapper(*args, **kwargs):
-            try:
-                return func(*args, **kwargs)
-            except Exception as e:
-                error_collection.add(str(e), {'operation': operation})
-            return None
-        return wrapper
-    return decorator
-
-# For backward compatibility
-def show_error_dialog(message: str):
-    """Show a simple error dialog with a single message."""
-    logger.error(message)
-    QMessageBox.critical(None, "Error", message)
-
-class ErrorHandler(QObject):
-    """
-    Global error handler that manages exceptions and provides error reporting.
-    Supports collecting and displaying multiple errors at once.
-    """
-    
-    error_occurred = pyqtSignal(str, str)  # Signal emitted when an error occurs (type, message)
-    
-    def __init__(self):
-        super().__init__()
-        self.error_buffer = []  # Buffer to collect multiple errors
-        self.max_buffer_size = 10  # Maximum number of errors to buffer
-        self.install_global_handler()
-    
-    def install_global_handler(self):
-        """Install the global exception handler."""
-        sys.excepthook = self.handle_global_exception
-    
-    def handle_global_exception(self, exc_type, exc_value, exc_traceback):
-        """Handle uncaught exceptions globally."""
-        # Format the traceback
-        tb_lines = traceback.format_exception(exc_type, exc_value, exc_traceback)
-        tb_text = ''.join(tb_lines)
-        
-        # Add error to buffer
-        error_info = {
-            'type': exc_type.__name__,
-            'message': str(exc_value),
-            'traceback': tb_text,
-            'context': {'type': 'global_exception'}
-        }
-        self.add_error(error_info)
-        
-        # Emit the error signal
-        self.error_occurred.emit(exc_type.__name__, str(exc_value))
-        
-        # Show error dialog if in GUI context
-        self.show_error_dialog()
-    
-    def add_error(self, error_info):
-        """Add an error to the buffer."""
-        # Log the error
-        logger.log_error(error_info['message'], {
-            'traceback': error_info['traceback'],
-            'type': error_info['type'],
-            'context': error_info['context']
-        })
-        
-        # Add to buffer
-        self.error_buffer.append(error_info)
-        
-        # Keep buffer size in check
-        if len(self.error_buffer) > self.max_buffer_size:
-            self.error_buffer.pop(0)  # Remove oldest error
-    
-    def show_error_dialog(self, clear_buffer=True):
-        """Show dialog with all buffered errors."""
-        if not self.error_buffer:
-            return
-            
-        try:
-            # Format error messages
-            error_messages = []
-            for error in self.error_buffer:
-                error_messages.append(
-                    f"Error Type: {error['type']}\n"
-                    f"Message: {error['message']}\n"
-                    f"{'='*50}"
-                )
-            
-            # Show dialog with all errors
-            QMessageBox.critical(
-                None,
-                f"Multiple Errors ({len(self.error_buffer)})",
-                "The following errors occurred:\n\n" + "\n\n".join(error_messages)
-            )
-            
-            # Clear buffer if requested
-            if clear_buffer:
-                self.error_buffer.clear()
-                
-        except:
-            # If we can't show GUI dialog, print to console
-            print("Multiple errors occurred:", file=sys.stderr)
-            for error in self.error_buffer:
-                print(f"\nError Type: {error['type']}", file=sys.stderr)
-                print(f"Message: {error['message']}", file=sys.stderr)
-                print(f"Traceback:\n{error['traceback']}", file=sys.stderr)
-            
-            if clear_buffer:
-                self.error_buffer.clear()
-    
-    def handle_errors(self, func):
-        """
-        Decorator to handle errors in functions.
-        Logs errors and shows user-friendly messages.
-        """
         @wraps(func)
         def wrapper(*args, **kwargs):
             try:
                 return func(*args, **kwargs)
             except Exception as e:
-                # Get context information
-                context = {
-                    'function': func.__name__,
-                    'args': str(args),
-                    'kwargs': str(kwargs)
-                }
-                
-                # Format traceback
-                tb_text = ''.join(traceback.format_exc())
-                
-                # Add error to handler's buffer
-                error_handler.add_error({
-                    'type': type(e).__name__,
-                    'message': str(e),
-                    'traceback': tb_text,
-                    'context': context
-                })
-                
-                # Show errors if we have accumulated some
-                if len(error_handler.error_buffer) >= 3:  # Show after 3 errors
-                    error_handler.show_error_dialog()
-                
-                # Re-raise critical exceptions
-                if isinstance(e, (SystemExit, KeyboardInterrupt)):
-                    raise
-                
+                if collection:
+                    collection.add(
+                        f"Error in {operation}: {str(e)}",
+                        {
+                            'function': func.__name__,
+                            'args': args,
+                            'kwargs': kwargs
+                        }
+                    )
                 return None
-        
         return wrapper
-
-# Global error handler instance
-error_handler = ErrorHandler() 
+    return decorator 
