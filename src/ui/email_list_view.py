@@ -1,7 +1,8 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QTableWidget, 
-                           QTableWidgetItem, QMenu, QMessageBox)
+                           QTableWidgetItem, QMenu, QMessageBox,
+                           QToolBar, QStyle)
 from PyQt6.QtCore import pyqtSignal, Qt
-from PyQt6.QtGui import QFont, QColor, QBrush
+from PyQt6.QtGui import QFont, QColor, QBrush, QAction, QIcon
 from datetime import datetime
 from utils.error_handler import handle_errors
 from utils.logger import logger
@@ -29,6 +30,17 @@ class EmailListView(QWidget):
         """Initialize the UI components."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Create toolbar
+        self.toolbar = QToolBar()
+        self.toolbar.setIconSize(Qt.QSize(16, 16))
+        self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        
+        # Create toolbar actions
+        self.setup_toolbar_actions()
+        
+        # Add toolbar to layout
+        layout.addWidget(self.toolbar)
         
         # Create email table
         self.email_table = QTableWidget()
@@ -62,6 +74,122 @@ class EmailListView(QWidget):
         self.email_table.customContextMenuRequested.connect(self.show_context_menu)
         
         layout.addWidget(self.email_table)
+    
+    def setup_toolbar_actions(self):
+        """Set up toolbar actions."""
+        style = self.style()
+        
+        # Mark Read/Unread action
+        self.read_action = QAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton),
+            "Mark as Read",
+            self
+        )
+        self.read_action.setEnabled(False)
+        self.read_action.triggered.connect(self.toggle_read_status)
+        self.toolbar.addAction(self.read_action)
+        
+        # Flag/Unflag action
+        self.flag_action = QAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_DialogYesButton),
+            "Flag",
+            self
+        )
+        self.flag_action.setEnabled(False)
+        self.flag_action.triggered.connect(self.toggle_flag_status)
+        self.toolbar.addAction(self.flag_action)
+        
+        self.toolbar.addSeparator()
+        
+        # Move to submenu
+        self.move_menu = QMenu("Move to", self)
+        self.move_action = QAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_DirIcon),
+            "Move to",
+            self
+        )
+        self.move_action.setEnabled(False)
+        self.move_action.setMenu(self.move_menu)
+        self.toolbar.addAction(self.move_action)
+    
+    def update_toolbar_actions(self):
+        """Update toolbar actions based on selected email."""
+        selected_items = self.email_table.selectedItems()
+        has_selection = bool(selected_items)
+        
+        self.read_action.setEnabled(has_selection)
+        self.flag_action.setEnabled(has_selection)
+        self.move_action.setEnabled(has_selection)
+        
+        if has_selection:
+            row = selected_items[0].row()
+            email_data = self.email_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+            
+            # Update read/unread action
+            is_unread = 'unread' in email_data.get('flags', [])
+            self.read_action.setText("Mark as Read" if is_unread else "Mark as Unread")
+            
+            # Update flag action
+            is_flagged = 'flagged' in email_data.get('flags', [])
+            self.flag_action.setText("Remove Flag" if is_flagged else "Flag")
+            
+            # Update move menu
+            self.update_move_menu(email_data)
+    
+    def update_move_menu(self, email_data):
+        """Update the move to menu with available folders."""
+        self.move_menu.clear()
+        
+        # Add special folders first
+        for folder in ['INBOX', 'Archive', 'Spam', 'Trash']:
+            if folder != self.current_folder:
+                action = self.move_menu.addAction(folder)
+                action.triggered.connect(
+                    lambda checked, f=folder: self.move_email(email_data, f)
+                )
+        
+        # Add separator
+        if self.move_menu.actions():
+            self.move_menu.addSeparator()
+        
+        # Add custom folders
+        if hasattr(self, 'available_folders'):
+            for folder in self.available_folders:
+                if folder not in ['INBOX', 'Archive', 'Spam', 'Trash'] and folder != self.current_folder:
+                    action = self.move_menu.addAction(folder)
+                    action.triggered.connect(
+                        lambda checked, f=folder: self.move_email(email_data, f)
+                    )
+    
+    def toggle_read_status(self):
+        """Toggle read/unread status of selected email."""
+        selected_items = self.email_table.selectedItems()
+        if not selected_items:
+            return
+        
+        row = selected_items[0].row()
+        email_data = self.email_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        is_unread = 'unread' in email_data.get('flags', [])
+        
+        if is_unread:
+            self.mark_read(email_data)
+        else:
+            self.mark_unread(email_data)
+    
+    def toggle_flag_status(self):
+        """Toggle flagged status of selected email."""
+        selected_items = self.email_table.selectedItems()
+        if not selected_items:
+            return
+        
+        row = selected_items[0].row()
+        email_data = self.email_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        is_flagged = 'flagged' in email_data.get('flags', [])
+        
+        if is_flagged:
+            self.mark_unflagged(email_data)
+        else:
+            self.mark_flagged(email_data)
     
     def update_emails(self, emails, folder=None):
         """
@@ -208,6 +336,9 @@ class EmailListView(QWidget):
         row = selected_items[0].row()
         email_data = self.email_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
         self.email_selected.emit(email_data)
+        
+        # Update toolbar actions
+        self.update_toolbar_actions()
     
     def update_folder_list(self, folders):
         """
