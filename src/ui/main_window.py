@@ -1,7 +1,9 @@
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, 
                            QTabWidget, QMenuBar)
+from PyQt6.QtCore import Qt
 from .email_accounts_tab import EmailAccountsTab
 from .email_analysis_tab import EmailAnalysisTab
+from ..resources import Resources
 
 class MainWindow(QMainWindow):
     """
@@ -11,8 +13,9 @@ class MainWindow(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AI Email Assistant")
+        self.setWindowTitle(Resources.APP_NAME)
         self.setMinimumSize(800, 600)
+        self.setWindowIcon(Resources.get_app_icon())
         
         # Create the central widget and main layout
         self.central_widget = QWidget()
