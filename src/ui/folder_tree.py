@@ -1,9 +1,10 @@
 from PyQt6.QtWidgets import (QTreeWidget, QTreeWidgetItem, QMenu, 
                            QInputDialog, QMessageBox)
 from PyQt6.QtCore import pyqtSignal, Qt
-from PyQt6.QtGui import QIcon, QColor, QBrush, QFont
+from PyQt6.QtGui import QIcon, QColor, QBrush, QFont, QDragEnterEvent, QDropEvent, QDragMoveEvent
 from utils.error_handler import handle_errors
 from utils.logger import logger
+from datetime import datetime
 
 class FolderTree(QTreeWidget):
     """
@@ -15,6 +16,7 @@ class FolderTree(QTreeWidget):
     folder_created = pyqtSignal(str)   # Signal emitted when new folder is created
     folder_deleted = pyqtSignal(str)   # Signal emitted when folder is deleted
     folder_renamed = pyqtSignal(str, str)  # Signal emitted when folder is renamed (old_name, new_name)
+    email_moved = pyqtSignal(str, str)  # Signal emitted when email is moved (message_id, target_folder)
     
     SPECIAL_FOLDERS = {
         'INBOX': {'icon': '📥', 'color': '#2196F3'},  # Blue
@@ -34,6 +36,14 @@ class FolderTree(QTreeWidget):
         # Track folder states
         self.expanded_folders = set()  # Remember expanded state
         self.selected_folder = None    # Currently selected folder
+        
+        # Enable drag and drop
+        self.setAcceptDrops(True)
+        self.setDragEnabled(True)
+        
+        # Track sync status
+        self.syncing = False
+        self.last_sync = None
     
     def setup_ui(self):
         """Initialize the UI components."""
@@ -66,6 +76,10 @@ class FolderTree(QTreeWidget):
         self.itemClicked.connect(self.on_folder_clicked)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_context_menu)
+        
+        # Add drag and drop settings
+        self.setDragDropMode(QTreeWidget.DragDropMode.DropOnly)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
     
     def show_context_menu(self, position):
         """Show context menu for folder operations."""
@@ -250,3 +264,106 @@ class FolderTree(QTreeWidget):
             self.scrollToItem(self.folder_items[selected_folder])
         
         logger.logger.debug("Folder tree update complete")
+    
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        """Handle drag enter events for email drops."""
+        if event.mimeData().hasFormat("application/x-email-id"):
+            event.acceptProposedAction()
+    
+    def dragMoveEvent(self, event: QDragMoveEvent):
+        """Handle drag move events to highlight valid drop targets."""
+        item = self.itemAt(event.pos())
+        if item:
+            # Don't allow dropping into special folders that don't support it
+            folder_name = item.text(0).split()[-1]  # Remove icon if present
+            if folder_name in ['Sent', 'Drafts']:
+                event.ignore()
+                return
+            event.acceptProposedAction()
+    
+    def dropEvent(self, event: QDropEvent):
+        """Handle email drops onto folders."""
+        item = self.itemAt(event.pos())
+        if not item:
+            event.ignore()
+            return
+        
+        target_folder = item.text(0).split()[-1]  # Remove icon if present
+        message_id = event.mimeData().data("application/x-email-id").data().decode()
+        
+        # Emit signal to move the email
+        self.email_moved.emit(message_id, target_folder)
+        event.acceptProposedAction()
+    
+    def start_sync(self):
+        """Start folder synchronization."""
+        if not self.syncing:
+            self.syncing = True
+            # Add visual indicator (e.g., spinner) here
+            self.update_sync_status("Syncing folders...")
+    
+    def finish_sync(self):
+        """Complete folder synchronization."""
+        self.syncing = False
+        self.last_sync = datetime.now()
+        self.update_sync_status("Sync complete")
+    
+    def update_sync_status(self, message: str):
+        """Update sync status display."""
+        # Update status bar or other UI element to show sync status
+        if hasattr(self.parent(), 'statusBar'):
+            self.parent().statusBar().showMessage(message, 3000)
+    
+    def refresh_folders(self):
+        """Refresh folder list and status from server."""
+        self.start_sync()
+        # Emit signal to request folder refresh from email manager
+        self.folder_refresh_requested.emit()
+    
+    def update_special_folders(self, folder_data: dict):
+        """Update special folder information."""
+        for folder_name, data in folder_data.items():
+            if folder_name in self.folder_items:
+                item = self.folder_items[folder_name]
+                # Update folder icon and status
+                if 'icon' in data:
+                    item.setText(0, f"{data['icon']} {folder_name}")
+                if 'color' in data:
+                    item.setForeground(0, QBrush(QColor(data['color'])))
+                if 'status' in data:
+                    self.update_folder_status(folder_name, data['status'])
+    
+    def get_folder_path(self, item: QTreeWidgetItem) -> str:
+        """Get full path for a folder item."""
+        path = []
+        while item:
+            path.insert(0, item.text(0).split()[-1])  # Remove icon if present
+            item = item.parent()
+        return '/'.join(path)
+    
+    def find_folder_item(self, folder_path: str) -> QTreeWidgetItem:
+        """Find a folder item by its path."""
+        parts = folder_path.split('/')
+        current = None
+        
+        for i in range(self.topLevelItemCount()):
+            item = self.topLevelItem(i)
+            if item.text(0).split()[-1] == parts[0]:
+                current = item
+                break
+        
+        if not current or len(parts) == 1:
+            return current
+        
+        for part in parts[1:]:
+            found = False
+            for i in range(current.childCount()):
+                child = current.child(i)
+                if child.text(0).split()[-1] == part:
+                    current = child
+                    found = True
+                    break
+            if not found:
+                return None
+        
+        return current

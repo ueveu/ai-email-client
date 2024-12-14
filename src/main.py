@@ -14,6 +14,9 @@ from utils.error_handler import error_handler, handle_errors
 # Load environment variables
 load_dotenv()
 
+# Create application instance first
+app = QApplication(sys.argv)
+
 # Verify environment variables
 logger.logger.info("Checking environment variables...")
 client_id = os.getenv("GOOGLE_CLIENT_ID")
@@ -44,9 +47,6 @@ def main():
     Initializes the Qt application and shows the main window.
     """
     try:
-        # Create application instance
-        app = QApplication(sys.argv)
-        
         # Initialize application
         initialize_app()
         

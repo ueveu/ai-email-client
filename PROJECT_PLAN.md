@@ -71,10 +71,11 @@
 - ✅ Implement basic email fetching
 - ✅ Create email list display
 - ✅ Implement email content viewing
-- ⏳ Add email folder support
-  - List folders
-  - Handle folder navigation
-  - Support folder operations
+- ✅ Add email folder support
+  - ✅ List folders
+  - ✅ Handle folder navigation
+  - ✅ Support folder operations
+  - ✅ Implement drag and drop
 - ✅ Add email caching for offline access
 - ✅ Implement conversation threading
 - ⏳ Add attachment handling
@@ -233,9 +234,9 @@
 
 ## Current Focus
 Currently working on:
-- Setting up email folder support
-- Implementing account editing capabilities
-- Adding quick setup for popular email providers
+- Implementing attachment handling UI
+- Adding account editing capabilities
+- Completing provider-specific features for Outlook and Yahoo
 
 ## Notes
 - Update this file after completing each task
@@ -246,3 +247,10 @@ Currently working on:
 - Provider-specific authentication flows require OAuth2 implementation
 - Auto-login features must follow security best practices
 - Direct login buttons should handle various authentication scenarios
+
+## Security Notes
+
+- The `.env` file contains sensitive information and is excluded from version control.
+- Never commit your API keys or email credentials to the repository.
+- The application stores email credentials securely using system keyring.
+- Ensure all sensitive data, such as email credentials and API keys, are protected and not exposed in the public repository.

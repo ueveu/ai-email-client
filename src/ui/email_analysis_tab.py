@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
                            QTreeWidget, QTreeWidgetItem, QTextEdit, QPushButton,
-                           QLabel, QComboBox)
+                           QLabel, QComboBox, QApplication)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QClipboard
 from .folder_tree import FolderTree
@@ -14,10 +14,12 @@ class EmailAnalysisTab(QWidget):
     Displays email folders, list, content, and suggested replies.
     """
     
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        """Initialize the email analysis tab."""
+        super().__init__(parent)
         self.email_manager = None
         self.current_folder = None
+        logger.logger.debug("Initializing EmailAnalysisTab")
         self.setup_ui()
     
     def setup_ui(self):
@@ -102,26 +104,41 @@ class EmailAnalysisTab(QWidget):
     
     def set_email_manager(self, email_manager):
         """Set the email manager and initialize the view."""
+        logger.logger.debug(f"Setting email manager: {email_manager}")
         self.email_manager = email_manager
-        self.refresh_view()
+        if self.email_manager:
+            # Initialize with INBOX folder
+            self.current_folder = 'INBOX'
+            self.refresh_view()
+        else:
+            logger.logger.warning("Email manager is None")
     
     def refresh_view(self):
         """Refresh the entire view including folders and emails."""
+        logger.logger.debug("Refreshing view")
         if not self.email_manager:
+            logger.logger.warning("No email manager available")
             return
         
-        # Update folder tree
-        folders = self.email_manager.list_folders()
-        status_data = {}
-        for folder in folders:
-            status = self.email_manager.get_folder_status(folder['name'])
-            if status:
-                status_data[folder['name']] = status
-        
-        self.folder_tree.update_folders(folders, status_data)
-        
-        # Refresh emails in current folder
-        self.refresh_emails()
+        try:
+            # Update folder tree
+            folders = self.email_manager.list_folders()
+            logger.logger.debug(f"Found {len(folders)} folders")
+            status_data = {}
+            for folder in folders:
+                status = self.email_manager.get_folder_status(folder['name'])
+                if status:
+                    status_data[folder['name']] = status
+            
+            self.folder_tree.update_folders(folders, status_data)
+            
+            # Refresh emails in current folder
+            if self.current_folder:
+                self.refresh_emails()
+            else:
+                logger.logger.debug("No folder selected for refresh")
+        except Exception as e:
+            logger.logger.error(f"Error refreshing view: {str(e)}")
     
     def on_account_changed(self, index):
         """Handle account selection change."""
@@ -133,32 +150,51 @@ class EmailAnalysisTab(QWidget):
     
     def on_folder_selected(self, folder_name):
         """Handle folder selection."""
+        logger.logger.debug(f"Selected folder: {folder_name}")
         self.current_folder = folder_name
         self.refresh_emails()
     
     def refresh_emails(self):
         """Fetch and display emails for the current folder."""
+        logger.logger.debug("Refreshing emails")
         self.email_tree.clear()
         
-        if not self.email_manager or not self.current_folder:
+        if not self.email_manager:
+            logger.logger.warning("No email manager available")
             return
         
-        # Fetch emails from the selected folder
-        emails = self.email_manager.fetch_emails(
-            folder=self.current_folder,
-            limit=50,
-            offset=0
-        )
+        if not self.current_folder:
+            logger.logger.warning("No folder selected")
+            return
         
-        # Add emails to the tree
-        for email_data in emails:
-            item = QTreeWidgetItem([
-                email_data["subject"],
-                email_data["from"],
-                email_data["date"].strftime("%Y-%m-%d %H:%M")
-            ])
-            item.setData(0, Qt.ItemDataRole.UserRole, email_data)
-            self.email_tree.addTopLevelItem(item)
+        try:
+            # Fetch emails from the selected folder
+            logger.logger.debug(f"Fetching emails from folder: {self.current_folder}")
+            emails = self.email_manager.fetch_emails(
+                folder=self.current_folder,
+                limit=50,
+                offset=0
+            )
+            logger.logger.debug(f"Fetched {len(emails)} emails")
+            
+            # Add emails to the tree
+            for email_data in emails:
+                try:
+                    logger.logger.debug(f"Adding email: {email_data.get('subject', 'No subject')} from {email_data.get('from', 'Unknown')}")
+                    item = QTreeWidgetItem([
+                        email_data.get("subject", "No subject"),
+                        email_data.get("from", "Unknown"),
+                        email_data.get("date", "").strftime("%Y-%m-%d %H:%M") if email_data.get("date") else ""
+                    ])
+                    item.setData(0, Qt.ItemDataRole.UserRole, email_data)
+                    self.email_tree.addTopLevelItem(item)
+                except Exception as e:
+                    logger.logger.error(f"Error adding email to tree: {str(e)}")
+                    logger.logger.error(f"Email data: {email_data}")
+            
+            logger.logger.debug(f"Email tree now has {self.email_tree.topLevelItemCount()} items")
+        except Exception as e:
+            logger.logger.error(f"Error refreshing emails: {str(e)}")
     
     def on_email_selected(self, item):
         """Handle email selection from the tree widget."""

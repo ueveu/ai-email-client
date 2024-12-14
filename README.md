@@ -1,5 +1,6 @@
 # AI Email Assistant
 
+
 ## Project Overview
 The AI Email Assistant is a standalone desktop application built using Python and PyQt. It is designed to manage email accounts, fetch emails, analyze content, and generate AI replies using the Gemini API. Additionally, a Thunderbird extension is developed using JavaScript to integrate the assistant's features directly into the Thunderbird email client.
 

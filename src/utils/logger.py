@@ -58,6 +58,22 @@ class Logger:
         
         self._initialized = True
     
+    def error(self, message, *args, **kwargs):
+        """Log an error message."""
+        self.logger.error(message, *args, **kwargs)
+    
+    def warning(self, message, *args, **kwargs):
+        """Log a warning message."""
+        self.logger.warning(message, *args, **kwargs)
+    
+    def info(self, message, *args, **kwargs):
+        """Log an info message."""
+        self.logger.info(message, *args, **kwargs)
+    
+    def debug(self, message, *args, **kwargs):
+        """Log a debug message."""
+        self.logger.debug(message, *args, **kwargs)
+    
     def log_error(self, error, context=None):
         """
         Log an error with optional context information.

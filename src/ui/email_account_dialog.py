@@ -116,8 +116,7 @@ class EmailAccountDialog(QDialog):
         Args:
             provider (Provider): Email provider to configure
         """
-        email = self.email_input.text()
-        logger.logger.debug(f"Starting quick setup for provider: {provider.value} with email: {email}")
+        logger.logger.debug(f"Starting quick setup for provider: {provider.value}")
         
         config = EmailProviders.get_provider_config(provider)
         if not config:
@@ -144,14 +143,17 @@ class EmailAccountDialog(QDialog):
                 self.password_label.hide()
                 self.password_input.hide()
                 
-                # Start OAuth flow
-                tokens = EmailProviders.authenticate_gmail(email)
-                if tokens:
+                # Start OAuth flow - email will be obtained during authentication
+                tokens = EmailProviders.authenticate_gmail()
+                if tokens and 'email' in tokens:
+                    email = tokens['email']
+                    self.email_input.setText(email)  # Set the email from OAuth response
+                    
                     logger.logger.debug("OAuth authentication successful, storing tokens")
                     QMessageBox.information(
                         self,
                         "Authentication Successful",
-                        "Gmail account authenticated successfully!"
+                        f"Gmail account {email} authenticated successfully!"
                     )
                     # Store the tokens
                     self.credential_manager.store_oauth_tokens(email, tokens)
@@ -170,8 +172,12 @@ class EmailAccountDialog(QDialog):
                     logger.logger.debug("Accepting dialog to save account")
                     self.accept()
                 else:
-                    logger.logger.error("No tokens received from OAuth authentication")
-                
+                    logger.logger.error("No tokens or email received from OAuth authentication")
+                    QMessageBox.warning(
+                        self,
+                        "Authentication Failed",
+                        "Failed to authenticate Gmail account. Please try again."
+                    )
             except Exception as e:
                 logger.logger.error(f"Gmail OAuth error: {str(e)}", exc_info=True)
                 QMessageBox.critical(
@@ -185,6 +191,17 @@ class EmailAccountDialog(QDialog):
                 )
                 return
         else:
+            # For non-OAuth providers, we need an email address
+            email = self.email_input.text()
+            if not email:
+                QMessageBox.warning(
+                    self,
+                    "Email Required",
+                    f"Please enter your {provider.value} email address first."
+                )
+                self.email_input.setFocus()
+                return
+            
             # Show password field for non-OAuth providers
             self.password_label.show()
             self.password_input.show()
@@ -255,6 +272,20 @@ class EmailAccountDialog(QDialog):
         if provider == Provider.GMAIL:
             self.password_label.hide()
             self.password_input.hide()
+            
+            # Check if we need to re-authenticate
+            tokens = self.credential_manager.get_oauth_tokens(account_data['email'])
+            if not tokens:
+                reply = QMessageBox.question(
+                    self,
+                    "Re-authentication Required",
+                    "Your Gmail account needs to be re-authenticated.\n\n"
+                    "Would you like to authenticate now?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                
+                if reply == QMessageBox.StandardButton.Yes:
+                    self.quick_setup(Provider.GMAIL)
         else:
             credentials = self.credential_manager.get_email_credentials(account_data['email'])
             if credentials and 'password' in credentials:
@@ -271,51 +302,53 @@ class EmailAccountDialog(QDialog):
         email = self.email_input.text()
         logger.logger.debug(f"Dialog accept called for email: {email}")
         
-        if not email:
-            logger.logger.warning("No email address provided")
-            QMessageBox.warning(self, "Validation Error", "Email address is required.")
-            return
-        
-        provider = EmailProviders.detect_provider(email)
+        provider = EmailProviders.detect_provider(email) if email else Provider.CUSTOM
         logger.logger.debug(f"Detected provider: {provider.value}")
         
-        if provider == Provider.GMAIL:
-            # Check for OAuth tokens
-            tokens = self.credential_manager.get_oauth_tokens(email)
-            if not tokens:
-                logger.logger.warning(f"No OAuth tokens found for {email}")
-                QMessageBox.warning(
-                    self,
-                    "Authentication Required",
-                    "Please authenticate your Gmail account using the Gmail Setup button."
-                )
-                return
-            logger.logger.debug("OAuth tokens verified")
-        else:
-            # Check for password
-            if not self.password_input.text():
-                logger.logger.warning("No password provided for non-OAuth account")
-                QMessageBox.warning(self, "Validation Error", "Password is required.")
+        # For manual setup, email is required
+        if not self.account_data:  # If not already set by quick setup
+            if not email:
+                logger.logger.warning("No email address provided for manual setup")
+                QMessageBox.warning(self, "Validation Error", "Email address is required for manual setup.")
                 return
             
-            # Store password securely
-            logger.logger.debug("Storing password securely")
-            self.credential_manager.store_email_credentials(
-                email,
-                {'password': self.password_input.text()}
-            )
-        
-        # Save account data
-        self.account_data = {
-            'email': email,
-            'imap_server': self.imap_server.text(),
-            'imap_port': self.imap_port.value(),
-            'imap_ssl': self.imap_ssl.isChecked(),
-            'smtp_server': self.smtp_server.text(),
-            'smtp_port': self.smtp_port.value(),
-            'smtp_ssl': self.smtp_ssl.isChecked()
-        }
-        logger.logger.debug(f"Final account data prepared: {self.account_data}")
+            if provider == Provider.GMAIL:
+                # Check for OAuth tokens
+                tokens = self.credential_manager.get_oauth_tokens(email)
+                if not tokens:
+                    logger.logger.warning(f"No OAuth tokens found for {email}")
+                    QMessageBox.warning(
+                        self,
+                        "Authentication Required",
+                        "Please authenticate your Gmail account using the Gmail Setup button."
+                    )
+                    return
+                logger.logger.debug("OAuth tokens verified")
+            else:
+                # Check for password
+                if not self.password_input.text():
+                    logger.logger.warning("No password provided for non-OAuth account")
+                    QMessageBox.warning(self, "Validation Error", "Password is required.")
+                    return
+                
+                # Store password securely
+                logger.logger.debug("Storing password securely")
+                self.credential_manager.store_email_credentials(
+                    email,
+                    {'password': self.password_input.text()}
+                )
+            
+            # Save account data
+            self.account_data = {
+                'email': email,
+                'imap_server': self.imap_server.text(),
+                'imap_port': self.imap_port.value(),
+                'imap_ssl': self.imap_ssl.isChecked(),
+                'smtp_server': self.smtp_server.text(),
+                'smtp_port': self.smtp_port.value(),
+                'smtp_ssl': self.smtp_ssl.isChecked()
+            }
+            logger.logger.debug(f"Final account data prepared: {self.account_data}")
         
         logger.logger.debug("Calling parent accept()")
         super().accept() 

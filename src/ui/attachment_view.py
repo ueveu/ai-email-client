@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QListWidget, QListWidgetItem,
                            QMenu, QFileDialog, QMessageBox, QLabel, QProgressBar)
-from PyQt6.QtCore import pyqtSignal, Qt, QSize
-from PyQt6.QtGui import QIcon, QPixmap, QDrag, QMimeData
+from PyQt6.QtCore import pyqtSignal, Qt, QSize, QMimeData
+from PyQt6.QtGui import QIcon, QPixmap, QDrag
 from utils.logger import logger
 import os
 import mimetypes

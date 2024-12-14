@@ -167,4 +167,4 @@ class EmailComposeDialog(QDialog):
     
     def dropEvent(self, event):
         """Handle drop events for attachments."""
-        self.attachment_view.dropEvent(event) 
+        self.attachment_view.dropEvent(event)

@@ -230,61 +230,30 @@ class EmailAccountsTab(QWidget):
             self.account_updated.emit(email, updated_data)
     
     @handle_errors
-    def remove_account(self):
-        """Removes the selected account after confirmation and cleanup."""
-        row = self.accounts_table.currentRow()
-        if row < 0:
+    def remove_account(self, confirmed=False):
+        """Remove the selected email account."""
+        selected_items = self.accounts_table.selectedItems()
+        if not selected_items:
             return
         
+        row = selected_items[0].row()
         email = self.accounts_table.item(row, 0).text()
         
-        # Ask for confirmation with detailed warning
-        reply = QMessageBox.warning(
-            self,
-            "Confirm Account Removal",
-            f"Are you sure you want to remove the account {email}?\n\n"
-            "This will:\n"
-            "• Delete all account settings\n"
-            "• Remove stored credentials\n"
-            "• Close any active connections\n\n"
-            "This action cannot be undone.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
-        )
+        if not confirmed:
+            reply = QMessageBox.question(
+                self,
+                "Confirm Removal",
+                f"Are you sure you want to remove the account {email}?\n\n"
+                "This will delete all account settings and stored credentials.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            
+            if reply == QMessageBox.StandardButton.No:
+                return
         
-        if reply == QMessageBox.StandardButton.Yes:
-            try:
-                # Close any active connections
-                if hasattr(self.parent(), 'email_manager'):
-                    email_manager = self.parent().email_manager
-                    if email_manager and email_manager.account_data['email'] == email:
-                        email_manager.close_connections()
-                        self.parent().email_manager = None
-                
-                # Remove credentials first
-                self.credential_manager.delete_email_credentials(email)
-                
-                # Emit signal to remove account from config
-                self.account_removed.emit(email)
-                
-                # Show success message
-                QMessageBox.information(
-                    self,
-                    "Account Removed",
-                    f"The account {email} has been successfully removed."
-                )
-                
-            except Exception as e:
-                logger.log_error(e, {
-                    'context': 'Removing account',
-                    'account': email
-                })
-                QMessageBox.critical(
-                    self,
-                    "Error",
-                    f"Failed to remove account completely: {str(e)}\n"
-                    "Some data might need to be cleaned up manually."
-                )
+        logger.logger.debug(f"Removing account: {email}")
+        self.account_removed.emit(email)
     
     def on_selection_changed(self):
         """Handle table selection changes."""
@@ -334,49 +303,53 @@ class EmailAccountsTab(QWidget):
     
     @handle_errors
     def on_email_reply(self, email_data):
-        """Handle email reply request."""
-        if hasattr(self.parent, 'email_manager'):
-            # Create reply email with quoted original
-            subject = f"Re: {email_data['subject']}"
-            body = f"\n\nOn {email_data['date']}, {email_data['from']} wrote:\n"
-            body += "\n".join(f"> {line}" for line in email_data['body'].split('\n'))
+        """Handle email reply."""
+        if not hasattr(self.parent, 'email_manager'):
+            return
+        
+        try:
+            # Send the email
+            success = self.parent.email_manager.send_email(
+                to_addr=", ".join(email_data['to']),
+                subject=email_data['subject'],
+                body=email_data['body'],
+                cc=", ".join(email_data['cc']),
+                bcc=", ".join(email_data['bcc']),
+                attachments=[att['filepath'] for att in email_data['attachments']]
+            )
             
-            # TODO: Open compose dialog with pre-filled data
-            logger.logger.debug(f"Reply to email: {subject}")
+            if success:
+                QMessageBox.information(
+                    self,
+                    "Email Sent",
+                    "Your reply has been sent successfully."
+                )
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Send Failed",
+                    "Failed to send the reply. Please check your connection and try again."
+                )
+                
+        except Exception as e:
+            logger.error(f"Error sending reply: {str(e)}")
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"An error occurred while sending the reply: {str(e)}"
+            )
     
     @handle_errors
     def on_email_reply_all(self, email_data):
-        """Handle email reply all request."""
-        if hasattr(self.parent, 'email_manager'):
-            # Create reply all email with quoted original
-            subject = f"Re: {email_data['subject']}"
-            body = f"\n\nOn {email_data['date']}, {email_data['from']} wrote:\n"
-            body += "\n".join(f"> {line}" for line in email_data['body'].split('\n'))
-            
-            # Include all recipients
-            recipients = {
-                'to': email_data['recipients']['to'],
-                'cc': email_data['recipients']['cc']
-            }
-            
-            # TODO: Open compose dialog with pre-filled data
-            logger.logger.debug(f"Reply all to email: {subject}")
+        """Handle reply all."""
+        # Use the same sending logic as regular reply
+        self.on_email_reply(email_data)
     
     @handle_errors
     def on_email_forward(self, email_data):
-        """Handle email forward request."""
-        if hasattr(self.parent, 'email_manager'):
-            # Create forwarded email
-            subject = f"Fwd: {email_data['subject']}"
-            body = f"\n\n---------- Forwarded message ----------\n"
-            body += f"From: {email_data['from']}\n"
-            body += f"Date: {email_data['date']}\n"
-            body += f"Subject: {email_data['subject']}\n"
-            body += f"To: {', '.join(email_data['recipients']['to'])}\n\n"
-            body += email_data['body']
-            
-            # TODO: Open compose dialog with pre-filled data
-            logger.logger.debug(f"Forward email: {subject}")
+        """Handle email forward."""
+        # Use the same sending logic as regular reply
+        self.on_email_reply(email_data)
     
     @handle_errors
     def on_email_delete(self, message_id):
