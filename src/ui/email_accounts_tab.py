@@ -104,6 +104,12 @@ class EmailAccountsTab(QWidget):
         self.email_list.email_mark_unread.connect(self.on_email_mark_unread)
         self.email_list.email_mark_flagged.connect(self.on_email_mark_flagged)
         self.email_list.email_mark_unflagged.connect(self.on_email_mark_unflagged)
+        
+        # Connect new email operation signals
+        self.email_list.email_reply.connect(self.on_email_reply)
+        self.email_list.email_reply_all.connect(self.on_email_reply_all)
+        self.email_list.email_forward.connect(self.on_email_forward)
+        self.email_list.email_delete.connect(self.on_email_delete)
     
     @handle_errors
     def on_folder_selected(self, folder_name):
@@ -325,3 +331,63 @@ class EmailAccountsTab(QWidget):
                 current_folder = self.folder_tree.selected_folder
                 if current_folder:
                     self.on_folder_selected(current_folder)
+    
+    @handle_errors
+    def on_email_reply(self, email_data):
+        """Handle email reply request."""
+        if hasattr(self.parent, 'email_manager'):
+            # Create reply email with quoted original
+            subject = f"Re: {email_data['subject']}"
+            body = f"\n\nOn {email_data['date']}, {email_data['from']} wrote:\n"
+            body += "\n".join(f"> {line}" for line in email_data['body'].split('\n'))
+            
+            # TODO: Open compose dialog with pre-filled data
+            logger.logger.debug(f"Reply to email: {subject}")
+    
+    @handle_errors
+    def on_email_reply_all(self, email_data):
+        """Handle email reply all request."""
+        if hasattr(self.parent, 'email_manager'):
+            # Create reply all email with quoted original
+            subject = f"Re: {email_data['subject']}"
+            body = f"\n\nOn {email_data['date']}, {email_data['from']} wrote:\n"
+            body += "\n".join(f"> {line}" for line in email_data['body'].split('\n'))
+            
+            # Include all recipients
+            recipients = {
+                'to': email_data['recipients']['to'],
+                'cc': email_data['recipients']['cc']
+            }
+            
+            # TODO: Open compose dialog with pre-filled data
+            logger.logger.debug(f"Reply all to email: {subject}")
+    
+    @handle_errors
+    def on_email_forward(self, email_data):
+        """Handle email forward request."""
+        if hasattr(self.parent, 'email_manager'):
+            # Create forwarded email
+            subject = f"Fwd: {email_data['subject']}"
+            body = f"\n\n---------- Forwarded message ----------\n"
+            body += f"From: {email_data['from']}\n"
+            body += f"Date: {email_data['date']}\n"
+            body += f"Subject: {email_data['subject']}\n"
+            body += f"To: {', '.join(email_data['recipients']['to'])}\n\n"
+            body += email_data['body']
+            
+            # TODO: Open compose dialog with pre-filled data
+            logger.logger.debug(f"Forward email: {subject}")
+    
+    @handle_errors
+    def on_email_delete(self, message_id):
+        """Handle email deletion request."""
+        if hasattr(self.parent, 'email_manager'):
+            # Move to trash instead of permanent deletion
+            if self.parent.email_manager.move_email(message_id, 'Trash'):
+                # Refresh current folder
+                current_folder = self.folder_tree.selected_folder
+                if current_folder:
+                    self.on_folder_selected(current_folder)
+                
+                # Update folder status
+                self.refresh_folder_status()

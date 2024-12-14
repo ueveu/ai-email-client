@@ -19,6 +19,10 @@ class EmailListView(QWidget):
     email_mark_unread = pyqtSignal(str)  # Emitted when email should be marked as unread
     email_mark_flagged = pyqtSignal(str)  # Emitted when email should be flagged
     email_mark_unflagged = pyqtSignal(str)  # Emitted when email should be unflagged
+    email_reply = pyqtSignal(dict)  # Emitted when user wants to reply to email
+    email_reply_all = pyqtSignal(dict)  # Emitted when user wants to reply to all
+    email_forward = pyqtSignal(dict)  # Emitted when user wants to forward email
+    email_delete = pyqtSignal(str)  # Emitted when user wants to delete email
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -79,6 +83,36 @@ class EmailListView(QWidget):
         """Set up toolbar actions."""
         style = self.style()
         
+        # Reply actions
+        self.reply_action = QAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_ArrowLeft),
+            "Reply",
+            self
+        )
+        self.reply_action.setEnabled(False)
+        self.reply_action.triggered.connect(self.reply_to_email)
+        self.toolbar.addAction(self.reply_action)
+        
+        self.reply_all_action = QAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_ArrowBack),
+            "Reply All",
+            self
+        )
+        self.reply_all_action.setEnabled(False)
+        self.reply_all_action.triggered.connect(self.reply_all_to_email)
+        self.toolbar.addAction(self.reply_all_action)
+        
+        self.forward_action = QAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_ArrowRight),
+            "Forward",
+            self
+        )
+        self.forward_action.setEnabled(False)
+        self.forward_action.triggered.connect(self.forward_email)
+        self.toolbar.addAction(self.forward_action)
+        
+        self.toolbar.addSeparator()
+        
         # Mark Read/Unread action
         self.read_action = QAction(
             style.standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton),
@@ -111,15 +145,30 @@ class EmailListView(QWidget):
         self.move_action.setEnabled(False)
         self.move_action.setMenu(self.move_menu)
         self.toolbar.addAction(self.move_action)
+        
+        # Delete action
+        self.delete_action = QAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon),
+            "Delete",
+            self
+        )
+        self.delete_action.setEnabled(False)
+        self.delete_action.triggered.connect(self.delete_email)
+        self.toolbar.addAction(self.delete_action)
     
     def update_toolbar_actions(self):
         """Update toolbar actions based on selected email."""
         selected_items = self.email_table.selectedItems()
         has_selection = bool(selected_items)
         
+        # Enable/disable all actions based on selection
+        self.reply_action.setEnabled(has_selection)
+        self.reply_all_action.setEnabled(has_selection)
+        self.forward_action.setEnabled(has_selection)
         self.read_action.setEnabled(has_selection)
         self.flag_action.setEnabled(has_selection)
         self.move_action.setEnabled(has_selection)
+        self.delete_action.setEnabled(has_selection)
         
         if has_selection:
             row = selected_items[0].row()
@@ -364,3 +413,54 @@ class EmailListView(QWidget):
     def mark_unflagged(self, email_data):
         """Emit signal to unflag email."""
         self.email_mark_unflagged.emit(str(email_data['message_id']))
+    
+    def reply_to_email(self):
+        """Handle reply to email action."""
+        selected_items = self.email_table.selectedItems()
+        if not selected_items:
+            return
+        
+        row = selected_items[0].row()
+        email_data = self.email_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        self.email_reply.emit(email_data)
+    
+    def reply_all_to_email(self):
+        """Handle reply all to email action."""
+        selected_items = self.email_table.selectedItems()
+        if not selected_items:
+            return
+        
+        row = selected_items[0].row()
+        email_data = self.email_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        self.email_reply_all.emit(email_data)
+    
+    def forward_email(self):
+        """Handle forward email action."""
+        selected_items = self.email_table.selectedItems()
+        if not selected_items:
+            return
+        
+        row = selected_items[0].row()
+        email_data = self.email_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        self.email_forward.emit(email_data)
+    
+    def delete_email(self):
+        """Handle delete email action."""
+        selected_items = self.email_table.selectedItems()
+        if not selected_items:
+            return
+        
+        row = selected_items[0].row()
+        email_data = self.email_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        
+        # Confirm deletion
+        reply = QMessageBox.question(
+            self,
+            "Delete Email",
+            "Move this email to Trash?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            self.email_delete.emit(str(email_data['message_id']))
