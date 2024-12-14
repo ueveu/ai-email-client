@@ -1,16 +1,20 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QTableWidget, 
                            QTableWidgetItem, QMenu, QMessageBox,
-                           QToolBar, QStyle)
-from PyQt6.QtCore import pyqtSignal, Qt
-from PyQt6.QtGui import QFont, QColor, QBrush, QAction, QIcon
-from datetime import datetime
+                           QToolBar, QStyle, QLineEdit, QComboBox,
+                           QHBoxLayout, QDateEdit, QCheckBox, QListWidget,
+                           QSplitter)
+from PyQt6.QtCore import pyqtSignal, Qt, QDate, QSize, QMimeData
+from PyQt6.QtGui import QFont, QColor, QBrush, QAction, QIcon, QDrag
+from datetime import datetime, timedelta
 from utils.error_handler import handle_errors
 from utils.logger import logger
+from .email_compose_dialog import EmailComposeDialog
+from .attachment_view import AttachmentView
 
 class EmailListView(QWidget):
     """
     Widget for displaying a list of emails in a table format.
-    Supports sorting, selection, and context menu operations.
+    Supports drag and drop operations for moving emails between folders.
     """
     
     email_selected = pyqtSignal(dict)  # Emitted when an email is selected
@@ -31,436 +35,176 @@ class EmailListView(QWidget):
         self.setup_ui()
     
     def setup_ui(self):
-        """Initialize the UI components."""
+        """Set up the UI components."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         
         # Create toolbar
         self.toolbar = QToolBar()
-        self.toolbar.setIconSize(Qt.QSize(16, 16))
+        self.toolbar.setIconSize(QSize(16, 16))
         self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        
-        # Create toolbar actions
-        self.setup_toolbar_actions()
-        
-        # Add toolbar to layout
         layout.addWidget(self.toolbar)
+        
+        # Create splitter for email list and attachments
+        splitter = QSplitter(Qt.Orientation.Vertical)
         
         # Create email table
         self.email_table = QTableWidget()
-        self.email_table.setColumnCount(4)
-        self.email_table.setHorizontalHeaderLabels(["From", "Subject", "Date", "Status"])
+        self.email_table.setColumnCount(6)  # Added column for attachment indicator
+        self.email_table.setHorizontalHeaderLabels(["Subject", "From", "Date", "Size", "Status", "📎"])
         self.email_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.email_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.email_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.email_table.verticalHeader().setVisible(False)
+        self.email_table.setAlternatingRowColors(True)
         self.email_table.setSortingEnabled(True)
         
-        # Style the table
-        self.email_table.setStyleSheet("""
-            QTableWidget {
-                border: none;
-                background-color: white;
-            }
-            QTableWidget::item {
-                padding: 8px;
-            }
-            QTableWidget::item:hover {
-                background-color: rgba(0, 0, 0, 0.05);
-            }
-            QTableWidget::item:selected {
-                background-color: rgba(25, 118, 210, 0.1);
-                color: #1976D2;
-            }
-        """)
+        # Enable drag and drop
+        self.email_table.setDragEnabled(True)
+        self.email_table.setAcceptDrops(False)  # Only allow dragging FROM here
+        self.email_table.setDragDropMode(QTableWidget.DragDropMode.DragOnly)
         
         # Connect signals
-        self.email_table.itemSelectionChanged.connect(self.on_selection_changed)
-        self.email_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.email_table.itemDoubleClicked.connect(self.on_email_double_clicked)
         self.email_table.customContextMenuRequested.connect(self.show_context_menu)
+        self.email_table.itemSelectionChanged.connect(self.on_selection_changed)
         
-        layout.addWidget(self.email_table)
+        splitter.addWidget(self.email_table)
+        
+        # Create attachment view
+        self.attachment_view = AttachmentView()
+        self.attachment_view.attachment_downloaded.connect(self.on_attachment_downloaded)
+        splitter.addWidget(self.attachment_view)
+        
+        # Set initial splitter sizes (70% email list, 30% attachments)
+        splitter.setSizes([700, 300])
+        layout.addWidget(splitter)
     
-    def setup_toolbar_actions(self):
-        """Set up toolbar actions."""
-        style = self.style()
+        # Add search/filter widgets
+        filter_layout = QHBoxLayout()
         
-        # Reply actions
-        self.reply_action = QAction(
-            style.standardIcon(QStyle.StandardPixmap.SP_ArrowLeft),
-            "Reply",
-            self
-        )
-        self.reply_action.setEnabled(False)
-        self.reply_action.triggered.connect(self.reply_to_email)
-        self.toolbar.addAction(self.reply_action)
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search emails...")
+        self.search_input.textChanged.connect(self.apply_filters)
+        filter_layout.addWidget(self.search_input)
         
-        self.reply_all_action = QAction(
-            style.standardIcon(QStyle.StandardPixmap.SP_ArrowBack),
-            "Reply All",
-            self
-        )
-        self.reply_all_action.setEnabled(False)
-        self.reply_all_action.triggered.connect(self.reply_all_to_email)
-        self.toolbar.addAction(self.reply_all_action)
+        self.date_filter = QComboBox()
+        self.date_filter.addItems(["All Time", "Today", "Last 7 Days", "Last 30 Days", "Custom..."])
+        self.date_filter.currentTextChanged.connect(self.on_date_filter_changed)
+        filter_layout.addWidget(self.date_filter)
         
-        self.forward_action = QAction(
-            style.standardIcon(QStyle.StandardPixmap.SP_ArrowRight),
-            "Forward",
-            self
-        )
-        self.forward_action.setEnabled(False)
-        self.forward_action.triggered.connect(self.forward_email)
-        self.toolbar.addAction(self.forward_action)
+        self.custom_date = QDateEdit()
+        self.custom_date.setCalendarPopup(True)
+        self.custom_date.setDate(QDate.currentDate())
+        self.custom_date.hide()
+        self.custom_date.dateChanged.connect(self.apply_filters)
+        filter_layout.addWidget(self.custom_date)
         
-        self.toolbar.addSeparator()
+        self.show_unread = QCheckBox("Unread Only")
+        self.show_unread.stateChanged.connect(self.apply_filters)
+        filter_layout.addWidget(self.show_unread)
         
-        # Mark Read/Unread action
-        self.read_action = QAction(
-            style.standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton),
-            "Mark as Read",
-            self
-        )
-        self.read_action.setEnabled(False)
-        self.read_action.triggered.connect(self.toggle_read_status)
-        self.toolbar.addAction(self.read_action)
-        
-        # Flag/Unflag action
-        self.flag_action = QAction(
-            style.standardIcon(QStyle.StandardPixmap.SP_DialogYesButton),
-            "Flag",
-            self
-        )
-        self.flag_action.setEnabled(False)
-        self.flag_action.triggered.connect(self.toggle_flag_status)
-        self.toolbar.addAction(self.flag_action)
-        
-        self.toolbar.addSeparator()
-        
-        # Move to submenu
-        self.move_menu = QMenu("Move to", self)
-        self.move_action = QAction(
-            style.standardIcon(QStyle.StandardPixmap.SP_DirIcon),
-            "Move to",
-            self
-        )
-        self.move_action.setEnabled(False)
-        self.move_action.setMenu(self.move_menu)
-        self.toolbar.addAction(self.move_action)
-        
-        # Delete action
-        self.delete_action = QAction(
-            style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon),
-            "Delete",
-            self
-        )
-        self.delete_action.setEnabled(False)
-        self.delete_action.triggered.connect(self.delete_email)
-        self.toolbar.addAction(self.delete_action)
+        layout.addLayout(filter_layout)
     
-    def update_toolbar_actions(self):
-        """Update toolbar actions based on selected email."""
-        selected_items = self.email_table.selectedItems()
-        has_selection = bool(selected_items)
-        
-        # Enable/disable all actions based on selection
-        self.reply_action.setEnabled(has_selection)
-        self.reply_all_action.setEnabled(has_selection)
-        self.forward_action.setEnabled(has_selection)
-        self.read_action.setEnabled(has_selection)
-        self.flag_action.setEnabled(has_selection)
-        self.move_action.setEnabled(has_selection)
-        self.delete_action.setEnabled(has_selection)
-        
-        if has_selection:
-            row = selected_items[0].row()
-            email_data = self.email_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
-            
-            # Update read/unread action
-            is_unread = 'unread' in email_data.get('flags', [])
-            self.read_action.setText("Mark as Read" if is_unread else "Mark as Unread")
-            
-            # Update flag action
-            is_flagged = 'flagged' in email_data.get('flags', [])
-            self.flag_action.setText("Remove Flag" if is_flagged else "Flag")
-            
-            # Update move menu
-            self.update_move_menu(email_data)
-    
-    def update_move_menu(self, email_data):
-        """Update the move to menu with available folders."""
-        self.move_menu.clear()
-        
-        # Add special folders first
-        for folder in ['INBOX', 'Archive', 'Spam', 'Trash']:
-            if folder != self.current_folder:
-                action = self.move_menu.addAction(folder)
-                action.triggered.connect(
-                    lambda checked, f=folder: self.move_email(email_data, f)
-                )
-        
-        # Add separator
-        if self.move_menu.actions():
-            self.move_menu.addSeparator()
-        
-        # Add custom folders
-        if hasattr(self, 'available_folders'):
-            for folder in self.available_folders:
-                if folder not in ['INBOX', 'Archive', 'Spam', 'Trash'] and folder != self.current_folder:
-                    action = self.move_menu.addAction(folder)
-                    action.triggered.connect(
-                        lambda checked, f=folder: self.move_email(email_data, f)
-                    )
-    
-    def toggle_read_status(self):
-        """Toggle read/unread status of selected email."""
-        selected_items = self.email_table.selectedItems()
-        if not selected_items:
-            return
-        
-        row = selected_items[0].row()
-        email_data = self.email_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
-        is_unread = 'unread' in email_data.get('flags', [])
-        
-        if is_unread:
-            self.mark_read(email_data)
-        else:
-            self.mark_unread(email_data)
-    
-    def toggle_flag_status(self):
-        """Toggle flagged status of selected email."""
-        selected_items = self.email_table.selectedItems()
-        if not selected_items:
-            return
-        
-        row = selected_items[0].row()
-        email_data = self.email_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
-        is_flagged = 'flagged' in email_data.get('flags', [])
-        
-        if is_flagged:
-            self.mark_unflagged(email_data)
-        else:
-            self.mark_flagged(email_data)
-    
-    def update_emails(self, emails, folder=None):
-        """
-        Update the email list with new data.
-        
-        Args:
-            emails (list): List of email data dictionaries
-            folder (str, optional): Current folder name
-        """
-        logger.logger.debug(f"Updating email list with {len(emails)} emails")
+    def update_email_list(self, emails):
+        """Update the email list with new data."""
         self.emails = emails
-        self.current_folder = folder
+        self.email_table.setRowCount(len(emails))
         
-        # Remember sorting state
-        current_sort_column = self.email_table.horizontalHeader().sortIndicatorSection()
-        current_sort_order = self.email_table.horizontalHeader().sortIndicatorOrder()
-        
-        self.email_table.setRowCount(0)
-        for email in emails:
-            row = self.email_table.rowCount()
-            self.email_table.insertRow(row)
+        for row, email in enumerate(emails):
+            # Subject
+            subject_item = QTableWidgetItem(email['subject'])
+            self.email_table.setItem(row, 0, subject_item)
             
             # From
             from_item = QTableWidgetItem(email['from'])
-            self.email_table.setItem(row, 0, from_item)
-            
-            # Subject
-            subject_item = QTableWidgetItem(email['subject'])
-            self.email_table.setItem(row, 1, subject_item)
+            self.email_table.setItem(row, 1, from_item)
             
             # Date
             date_str = email['date'].strftime("%Y-%m-%d %H:%M")
             date_item = QTableWidgetItem(date_str)
-            date_item.setData(Qt.ItemDataRole.UserRole, email['date'])  # Store datetime for sorting
+            date_item.setData(Qt.ItemDataRole.UserRole, email['date'])
             self.email_table.setItem(row, 2, date_item)
+            
+            # Size
+            size_item = QTableWidgetItem(self._format_size(len(email['body'])))
+            self.email_table.setItem(row, 3, size_item)
             
             # Status
             status = []
-            if 'unread' in email.get('flags', []):
-                status.append("Unread")
-            if 'flagged' in email.get('flags', []):
-                status.append("Flagged")
-            if email.get('attachments'):
-                status.append("📎")
-            status_item = QTableWidgetItem(" ".join(status))
-            self.email_table.setItem(row, 3, status_item)
+            if '\\Seen' not in email.get('flags', []):
+                status.append('Unread')
+            if '\\Flagged' in email.get('flags', []):
+                status.append('⭐')
+            status_item = QTableWidgetItem(' '.join(status))
+            self.email_table.setItem(row, 4, status_item)
+            
+            # Attachment indicator
+            has_attachments = bool(email.get('attachments', []))
+            attachment_item = QTableWidgetItem('📎' if has_attachments else '')
+            self.email_table.setItem(row, 5, attachment_item)
             
             # Style unread emails
-            if 'unread' in email.get('flags', []):
+            if '\\Seen' not in email.get('flags', []):
                 font = QFont()
                 font.setBold(True)
-                for col in range(4):
+                for col in range(self.email_table.columnCount()):
                     self.email_table.item(row, col).setFont(font)
-            
-            # Store email data
-            from_item.setData(Qt.ItemDataRole.UserRole, email)
         
-        # Restore sorting
-        self.email_table.sortItems(current_sort_column, current_sort_order)
-        
-        # Resize columns
         self.email_table.resizeColumnsToContents()
-        logger.logger.debug("Email list update complete")
+        
+        # Clear attachment view
+        self.attachment_view.set_attachments([])
+
+    def on_selection_changed(self):
+        """Handle email selection change."""
+        selected_items = self.email_table.selectedItems()
+        if not selected_items:
+            self.attachment_view.set_attachments([])
+            return
+        
+        row = selected_items[0].row()
+        email = self.emails[row]
+        
+        # Update attachment view
+        self.attachment_view.set_attachments(email.get('attachments', []))
     
-    def show_context_menu(self, position):
-        """Show context menu for email operations."""
-        item = self.email_table.itemAt(position)
+    def on_attachment_downloaded(self, file_path):
+        """Handle attachment download completion."""
+        logger.info(f"Attachment downloaded to: {file_path}")
+        # You could add additional handling here if needed
+
+    def mouseMoveEvent(self, event):
+        """Handle mouse move events to start drag operations."""
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            return
+        
+        # Get the current item
+        item = self.email_table.currentItem()
         if not item:
             return
         
+        # Get the email data
         row = item.row()
-        email_data = self.email_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
-        
-        menu = QMenu(self)
-        
-        # Add mark read/unread actions
-        is_unread = 'unread' in email_data.get('flags', [])
-        read_action = menu.addAction("Mark as Read" if is_unread else "Mark as Unread")
-        read_action.triggered.connect(
-            lambda: self.mark_read(email_data) if is_unread else self.mark_unread(email_data)
-        )
-        
-        # Add flag/unflag actions
-        is_flagged = 'flagged' in email_data.get('flags', [])
-        flag_action = menu.addAction("Remove Flag" if is_flagged else "Flag")
-        flag_action.triggered.connect(
-            lambda: self.mark_unflagged(email_data) if is_flagged else self.mark_flagged(email_data)
-        )
-        
-        menu.addSeparator()
-        
-        # Add move to folder submenu
-        move_menu = menu.addMenu("Move to")
-        
-        # Add special folders first
-        for folder in ['INBOX', 'Archive', 'Spam', 'Trash']:
-            if folder != self.current_folder:
-                action = move_menu.addAction(folder)
-                action.triggered.connect(
-                    lambda checked, f=folder: self.move_email(email_data, f)
-                )
-        
-        # Add separator
-        if move_menu.actions():
-            move_menu.addSeparator()
-        
-        # Add custom folders if available
-        if hasattr(self, 'available_folders'):
-            for folder in self.available_folders:
-                if folder not in ['INBOX', 'Archive', 'Spam', 'Trash'] and folder != self.current_folder:
-                    action = move_menu.addAction(folder)
-                    action.triggered.connect(
-                        lambda checked, f=folder: self.move_email(email_data, f)
-                    )
-        
-        menu.exec(self.email_table.mapToGlobal(position))
-    
-    def move_email(self, email_data, target_folder):
-        """
-        Move an email to another folder.
-        
-        Args:
-            email_data (dict): Email data dictionary
-            target_folder (str): Target folder name
-        """
-        # Confirm move
-        reply = QMessageBox.question(
-            self,
-            "Move Email",
-            f"Move this email to {target_folder}?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
-        )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            self.email_moved.emit(str(email_data['message_id']), target_folder)
-    
-    def on_selection_changed(self):
-        """Handle email selection changes."""
-        selected_items = self.email_table.selectedItems()
-        if not selected_items:
+        email_data = self.emails[row]
+        if not email_data or 'message_id' not in email_data:
             return
         
-        row = selected_items[0].row()
-        email_data = self.email_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
-        self.email_selected.emit(email_data)
+        # Create mime data
+        mime_data = QMimeData()
+        mime_data.setData("application/x-email-id", email_data['message_id'].encode())
         
-        # Update toolbar actions
-        self.update_toolbar_actions()
-    
-    def update_folder_list(self, folders):
-        """
-        Update the list of available folders for move operations.
+        # Create drag operation
+        drag = QDrag(self)
+        drag.setMimeData(mime_data)
         
-        Args:
-            folders (list): List of folder dictionaries
-        """
-        self.available_folders = [f['name'] for f in folders] 
-    
-    def mark_read(self, email_data):
-        """Emit signal to mark email as read."""
-        self.email_mark_read.emit(str(email_data['message_id']))
-    
-    def mark_unread(self, email_data):
-        """Emit signal to mark email as unread."""
-        self.email_mark_unread.emit(str(email_data['message_id']))
-    
-    def mark_flagged(self, email_data):
-        """Emit signal to flag email."""
-        self.email_mark_flagged.emit(str(email_data['message_id']))
-    
-    def mark_unflagged(self, email_data):
-        """Emit signal to unflag email."""
-        self.email_mark_unflagged.emit(str(email_data['message_id']))
-    
-    def reply_to_email(self):
-        """Handle reply to email action."""
-        selected_items = self.email_table.selectedItems()
-        if not selected_items:
-            return
+        # Optional: Set drag pixmap
+        # pixmap = QPixmap(32, 32)
+        # pixmap.fill(Qt.GlobalColor.transparent)
+        # painter = QPainter(pixmap)
+        # painter.drawText(0, 0, 32, 32, Qt.AlignmentFlag.AlignCenter, "📧")
+        # painter.end()
+        # drag.setPixmap(pixmap)
         
-        row = selected_items[0].row()
-        email_data = self.email_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
-        self.email_reply.emit(email_data)
-    
-    def reply_all_to_email(self):
-        """Handle reply all to email action."""
-        selected_items = self.email_table.selectedItems()
-        if not selected_items:
-            return
-        
-        row = selected_items[0].row()
-        email_data = self.email_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
-        self.email_reply_all.emit(email_data)
-    
-    def forward_email(self):
-        """Handle forward email action."""
-        selected_items = self.email_table.selectedItems()
-        if not selected_items:
-            return
-        
-        row = selected_items[0].row()
-        email_data = self.email_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
-        self.email_forward.emit(email_data)
-    
-    def delete_email(self):
-        """Handle delete email action."""
-        selected_items = self.email_table.selectedItems()
-        if not selected_items:
-            return
-        
-        row = selected_items[0].row()
-        email_data = self.email_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
-        
-        # Confirm deletion
-        reply = QMessageBox.question(
-            self,
-            "Delete Email",
-            "Move this email to Trash?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
-        )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            self.email_delete.emit(str(email_data['message_id']))
+        # Execute drag
+        drag.exec(Qt.DropAction.MoveAction)

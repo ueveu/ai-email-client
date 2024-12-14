@@ -1,197 +1,238 @@
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-                           QListWidget, QListWidgetItem, QPushButton,
-                           QFileDialog, QMenu)
-from PyQt6.QtCore import Qt, pyqtSignal, QMimeData
-from PyQt6.QtGui import QIcon, QDrag
-import os
-import shutil
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QListWidget, QListWidgetItem,
+                           QMenu, QFileDialog, QMessageBox, QLabel, QProgressBar)
+from PyQt6.QtCore import pyqtSignal, Qt, QSize
+from PyQt6.QtGui import QIcon, QPixmap, QDrag, QMimeData
 from utils.logger import logger
-from utils.error_handler import handle_errors
+import os
+import mimetypes
+import shutil
 
-class AttachmentListItem(QListWidgetItem):
-    """Custom list item for displaying attachment information."""
+class AttachmentView(QWidget):
+    """
+    Widget for displaying and managing email attachments.
+    Supports preview, download, and drag-and-drop operations.
+    """
     
-    def __init__(self, attachment_data):
-        """
-        Initialize attachment list item.
+    attachment_downloaded = pyqtSignal(str)  # Emitted when attachment is downloaded
+    attachment_removed = pyqtSignal(str)     # Emitted when attachment is removed
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.attachments = []  # List of attachment data dictionaries
+        self.setup_ui()
         
-        Args:
-            attachment_data (dict): Attachment information including filename,
-                                  size, content_type, and filepath
-        """
-        super().__init__()
-        self.attachment_data = attachment_data
-        self.setText(f"{attachment_data['filename']} ({self._format_size(attachment_data['size'])})")
-        self.setToolTip(f"Type: {attachment_data['content_type']}")
+        # Map common MIME types to icons
+        self.mime_icons = {
+            'image': '🖼️',
+            'text': '📄',
+            'application/pdf': '📑',
+            'audio': '🎵',
+            'video': '🎬',
+            'application/zip': '📦',
+            'application/x-compressed': '📦',
+            'application/x-zip-compressed': '📦',
+            'default': '📎'
+        }
     
-    def _format_size(self, size_bytes):
+    def setup_ui(self):
+        """Set up the UI components."""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Header label
+        self.header = QLabel("Attachments")
+        self.header.setVisible(False)
+        layout.addWidget(self.header)
+        
+        # Attachment list
+        self.list_widget = QListWidget()
+        self.list_widget.setDragEnabled(True)
+        self.list_widget.setAcceptDrops(True)
+        self.list_widget.setIconSize(QSize(32, 32))
+        self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list_widget.customContextMenuRequested.connect(self.show_context_menu)
+        self.list_widget.itemDoubleClicked.connect(self.on_attachment_double_clicked)
+        layout.addWidget(self.list_widget)
+        
+        # Progress bar for downloads
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
+    
+    def set_attachments(self, attachments):
+        """Set the list of attachments to display."""
+        self.attachments = attachments or []
+        self.update_list()
+    
+    def update_list(self):
+        """Update the attachment list display."""
+        self.list_widget.clear()
+        self.header.setVisible(bool(self.attachments))
+        
+        for attachment in self.attachments:
+            item = QListWidgetItem()
+            
+            # Get appropriate icon based on MIME type
+            mime_type = attachment.get('content_type', 'application/octet-stream')
+            icon = self.get_mime_icon(mime_type)
+            
+            # Set item properties
+            item.setText(f"{icon} {attachment['filename']} ({self.format_size(attachment.get('size', 0))})")
+            item.setData(Qt.ItemDataRole.UserRole, attachment)
+            
+            self.list_widget.addItem(item)
+    
+    def get_mime_icon(self, mime_type):
+        """Get appropriate icon for MIME type."""
+        main_type = mime_type.split('/')[0]
+        
+        if mime_type in self.mime_icons:
+            return self.mime_icons[mime_type]
+        elif main_type in self.mime_icons:
+            return self.mime_icons[main_type]
+        return self.mime_icons['default']
+    
+    def format_size(self, size_bytes):
         """Format file size in human-readable format."""
         for unit in ['B', 'KB', 'MB', 'GB']:
             if size_bytes < 1024:
                 return f"{size_bytes:.1f} {unit}"
             size_bytes /= 1024
         return f"{size_bytes:.1f} TB"
-
-class AttachmentView(QWidget):
-    """Widget for displaying and managing email attachments."""
     
-    attachment_saved = pyqtSignal(str)  # Signal emitted when attachment is saved
-    
-    def __init__(self, parent=None):
-        """Initialize attachment view."""
-        super().__init__(parent)
-        self.attachments = []
-        self.setup_ui()
-    
-    @handle_errors
-    def setup_ui(self):
-        """Set up the UI components."""
-        layout = QVBoxLayout(self)
-        
-        # Header
-        header_layout = QHBoxLayout()
-        self.header_label = QLabel("Attachments")
-        self.header_label.setStyleSheet("font-weight: bold;")
-        header_layout.addWidget(self.header_label)
-        
-        # Save all button
-        self.save_all_button = QPushButton("Save All")
-        self.save_all_button.clicked.connect(self.save_all_attachments)
-        self.save_all_button.setEnabled(False)
-        header_layout.addWidget(self.save_all_button)
-        
-        layout.addLayout(header_layout)
-        
-        # Attachment list
-        self.attachment_list = QListWidget()
-        self.attachment_list.setDragEnabled(True)
-        self.attachment_list.itemDoubleClicked.connect(self.open_attachment)
-        self.attachment_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.attachment_list.customContextMenuRequested.connect(self.show_context_menu)
-        layout.addWidget(self.attachment_list)
-        
-        # Set up drag and drop
-        self.attachment_list.setAcceptDrops(True)
-        self.attachment_list.setDragDropMode(QListWidget.DragDropMode.DragOnly)
-    
-    @handle_errors
-    def set_attachments(self, attachments):
-        """
-        Set the attachments to display.
-        
-        Args:
-            attachments (list): List of attachment dictionaries
-        """
-        self.attachments = attachments or []
-        self.attachment_list.clear()
-        
-        for attachment in self.attachments:
-            item = AttachmentListItem(attachment)
-            self.attachment_list.addItem(item)
-        
-        self.save_all_button.setEnabled(bool(self.attachments))
-        self.header_label.setText(f"Attachments ({len(self.attachments)})")
-    
-    @handle_errors
-    def save_attachment(self, attachment_data):
-        """
-        Save an attachment to disk.
-        
-        Args:
-            attachment_data (dict): Attachment information including filepath
-        
-        Returns:
-            bool: True if saved successfully, False otherwise
-        """
-        try:
-            # Get save location from user
-            file_name = attachment_data['filename']
-            save_path, _ = QFileDialog.getSaveFileName(
-                self, "Save Attachment", file_name
-            )
-            
-            if save_path:
-                # Copy file to selected location
-                shutil.copy2(attachment_data['filepath'], save_path)
-                self.attachment_saved.emit(save_path)
-                logger.logger.info(f"Saved attachment to {save_path}")
-                return True
-                
-        except Exception as e:
-            logger.error(f"Error saving attachment: {str(e)}")
-        
-        return False
-    
-    @handle_errors
-    def save_all_attachments(self):
-        """Save all attachments to a selected directory."""
-        if not self.attachments:
-            return
-        
-        # Get directory to save attachments
-        save_dir = QFileDialog.getExistingDirectory(
-            self, "Select Directory to Save Attachments"
-        )
-        
-        if save_dir:
-            success_count = 0
-            for attachment in self.attachments:
-                try:
-                    save_path = os.path.join(save_dir, attachment['filename'])
-                    # If file exists, add number to filename
-                    base, ext = os.path.splitext(save_path)
-                    counter = 1
-                    while os.path.exists(save_path):
-                        save_path = f"{base}_{counter}{ext}"
-                        counter += 1
-                    
-                    shutil.copy2(attachment['filepath'], save_path)
-                    success_count += 1
-                    self.attachment_saved.emit(save_path)
-                    
-                except Exception as e:
-                    logger.error(f"Error saving attachment: {str(e)}")
-            
-            logger.logger.info(f"Saved {success_count} attachments to {save_dir}")
-    
-    @handle_errors
-    def open_attachment(self, item):
-        """Open an attachment with the default system application."""
-        attachment_data = item.attachment_data
-        try:
-            os.startfile(attachment_data['filepath'])
-            logger.logger.info(f"Opened attachment: {attachment_data['filename']}")
-        except Exception as e:
-            logger.error(f"Error opening attachment: {str(e)}")
-    
-    @handle_errors
     def show_context_menu(self, position):
-        """Show context menu for attachment list items."""
-        item = self.attachment_list.itemAt(position)
+        """Show context menu for attachment operations."""
+        item = self.list_widget.itemAt(position)
         if not item:
             return
         
         menu = QMenu(self)
-        open_action = menu.addAction("Open")
-        save_action = menu.addAction("Save As...")
         
-        action = menu.exec(self.attachment_list.mapToGlobal(position))
+        # Add menu actions
+        preview_action = menu.addAction("Preview")
+        download_action = menu.addAction("Download")
+        menu.addSeparator()
+        remove_action = menu.addAction("Remove")
         
-        if action == open_action:
-            self.open_attachment(item)
-        elif action == save_action:
-            self.save_attachment(item.attachment_data)
+        # Handle action selection
+        action = menu.exec(self.list_widget.mapToGlobal(position))
+        if not action:
+            return
+        
+        attachment = item.data(Qt.ItemDataRole.UserRole)
+        
+        if action == preview_action:
+            self.preview_attachment(attachment)
+        elif action == download_action:
+            self.download_attachment(attachment)
+        elif action == remove_action:
+            self.remove_attachment(attachment)
+    
+    def on_attachment_double_clicked(self, item):
+        """Handle double-click on attachment item."""
+        attachment = item.data(Qt.ItemDataRole.UserRole)
+        self.preview_attachment(attachment)
+    
+    def preview_attachment(self, attachment):
+        """Preview an attachment if possible."""
+        mime_type = attachment.get('content_type', 'application/octet-stream')
+        main_type = mime_type.split('/')[0]
+        
+        # Handle different types of previews
+        if main_type == 'image':
+            # Show image preview dialog
+            pass  # TODO: Implement image preview
+        elif main_type == 'text' or mime_type == 'application/pdf':
+            # Show text/PDF preview dialog
+            pass  # TODO: Implement text/PDF preview
+        else:
+            QMessageBox.information(
+                self,
+                "Preview Not Available",
+                f"Preview is not available for {mime_type} files.\nPlease download the file to view it."
+            )
+    
+    def download_attachment(self, attachment):
+        """Download an attachment to local storage."""
+        # Get download location from user
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Attachment",
+            attachment['filename']
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            # Show progress
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+            
+            # Copy file to destination
+            source_path = attachment.get('path')
+            if source_path and os.path.exists(source_path):
+                shutil.copy2(source_path, file_path)
+                self.attachment_downloaded.emit(file_path)
+                
+                QMessageBox.information(
+                    self,
+                    "Download Complete",
+                    f"Attachment saved to:\n{file_path}"
+                )
+            else:
+                raise FileNotFoundError("Attachment file not found")
+                
+        except Exception as e:
+            logger.error(f"Error downloading attachment: {str(e)}")
+            QMessageBox.warning(
+                self,
+                "Download Failed",
+                f"Failed to download attachment:\n{str(e)}"
+            )
+        finally:
+            self.progress_bar.setVisible(False)
+    
+    def remove_attachment(self, attachment):
+        """Remove an attachment from the list."""
+        reply = QMessageBox.question(
+            self,
+            "Remove Attachment",
+            f"Remove attachment '{attachment['filename']}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            # Find and remove the attachment
+            for i, att in enumerate(self.attachments):
+                if att['filename'] == attachment['filename']:
+                    self.attachments.pop(i)
+                    break
+            
+            self.update_list()
+            self.attachment_removed.emit(attachment['filename'])
     
     def dragEnterEvent(self, event):
-        """Handle drag enter events for drag and drop."""
+        """Handle drag enter events for file drops."""
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
     
     def dropEvent(self, event):
-        """Handle drop events for drag and drop."""
-        urls = event.mimeData().urls()
-        for url in urls:
+        """Handle file drops for adding attachments."""
+        for url in event.mimeData().urls():
             file_path = url.toLocalFile()
-            if os.path.isfile(file_path):
-                # Handle dropped file (for future attachment upload feature)
-                pass 
+            if os.path.exists(file_path):
+                # Create attachment data
+                mime_type, _ = mimetypes.guess_type(file_path)
+                attachment = {
+                    'filename': os.path.basename(file_path),
+                    'path': file_path,
+                    'content_type': mime_type or 'application/octet-stream',
+                    'size': os.path.getsize(file_path)
+                }
+                
+                self.attachments.append(attachment)
+        
+        self.update_list()
+        event.acceptProposedAction()
