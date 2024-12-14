@@ -3,10 +3,14 @@ import smtplib
 import email
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 from datetime import datetime
 import ssl
 from email_cache import EmailCache
 from email_threading import ThreadManager
+from email_attachments import AttachmentManager
+import os
 
 class EmailManager:
     """
@@ -26,9 +30,10 @@ class EmailManager:
         self.smtp_connection = None
         self.current_folder = None
         
-        # Initialize email cache and thread manager
+        # Initialize managers
         self.cache = EmailCache()
         self.thread_manager = ThreadManager()
+        self.attachment_manager = AttachmentManager()
     
     def connect_imap(self):
         """
@@ -324,6 +329,14 @@ class EmailManager:
         else:
             body = email_message.get_payload(decode=True).decode()
         
+        # Save attachments and get their info
+        if attachments:
+            attachments = self.attachment_manager.save_attachments(
+                self.account_data['email'],
+                str(message_id),
+                attachments
+            )
+        
         # Get flags/status
         flags = []
         if hasattr(email_message, 'flags'):
@@ -371,7 +384,7 @@ class EmailManager:
         """Clear all cached data."""
         self.cache.clear_cache()
     
-    def send_email(self, to_addr, subject, body):
+    def send_email(self, to_addr, subject, body, attachments=None):
         """
         Send an email using the configured SMTP settings.
         
@@ -379,6 +392,7 @@ class EmailManager:
             to_addr (str): Recipient email address
             subject (str): Email subject
             body (str): Email body text
+            attachments (list, optional): List of attachment file paths
         
         Returns:
             bool: True if sent successfully, False otherwise
@@ -395,10 +409,32 @@ class EmailManager:
             
             msg.attach(MIMEText(body, "plain"))
             
+            # Add attachments if any
+            if attachments:
+                for filepath in attachments:
+                    try:
+                        with open(filepath, 'rb') as f:
+                            part = MIMEBase('application', 'octet-stream')
+                            part.set_payload(f.read())
+                            
+                        encoders.encode_base64(part)
+                        
+                        # Set filename in header
+                        filename = os.path.basename(filepath)
+                        part.add_header(
+                            'Content-Disposition',
+                            f'attachment; filename="{filename}"'
+                        )
+                        
+                        msg.attach(part)
+                    except Exception as e:
+                        logger.error(f"Error attaching file {filepath}: {str(e)}")
+                        continue
+            
             self.smtp_connection.send_message(msg)
             return True
         except Exception as e:
-            print(f"Error sending email: {str(e)}")
+            logger.error(f"Error sending email: {str(e)}")
             return False
     
     def close_connections(self):
@@ -451,3 +487,28 @@ class EmailManager:
             list: List of matching threads
         """
         return self.thread_manager.get_threads_by_participant(email_address)
+    
+    def get_attachment_path(self, message_id, filename):
+        """
+        Get the path to a saved attachment.
+        
+        Args:
+            message_id (str): ID of the email message
+            filename (str): Name of the attachment file
+        
+        Returns:
+            str: Path to the attachment if found, None otherwise
+        """
+        return self.attachment_manager.get_attachment_path(
+            self.account_data['email'],
+            str(message_id),
+            filename
+        )
+    
+    def cleanup_old_attachments(self, max_age_days=30):
+        """Clean up attachments older than specified age."""
+        self.attachment_manager.cleanup_old_attachments(max_age_days)
+    
+    def get_attachment_storage_info(self):
+        """Get information about attachment storage."""
+        return self.attachment_manager.get_storage_info()
