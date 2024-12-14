@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QClipboard
 from datetime import datetime
-from typing import List, Dict
+from typing import List, Dict, Optional
 from .folder_tree import FolderTree
 from .attachment_view import AttachmentView
 from .conversation_analysis_widget import ConversationAnalysisWidget
@@ -20,11 +20,16 @@ class EmailAnalysisTab(QWidget):
     Displays email folders, list, content, and suggested replies.
     """
     
-    def __init__(self, parent=None):
-        """Initialize the email analysis tab."""
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        """
+        Initialize the email analysis tab.
+        
+        Args:
+            parent: Optional parent widget
+        """
         super().__init__(parent)
-        self.email_manager = None
-        self.current_folder = None
+        self.email_manager: Optional[EmailManager] = None
+        self.current_folder: Optional[str] = None
         self.ai_service = AIService()
         self.loading_spinner = LoadingSpinner(self)
         logger.logger.debug("Initializing EmailAnalysisTab")
@@ -156,8 +161,13 @@ class EmailAnalysisTab(QWidget):
         # Connect feedback combo box
         self.feedback_combo.currentIndexChanged.connect(self._on_feedback_selected)
     
-    def set_email_manager(self, email_manager):
-        """Set the email manager and initialize the view."""
+    def set_email_manager(self, email_manager: EmailManager) -> None:
+        """
+        Set the email manager and initialize the view.
+        
+        Args:
+            email_manager: The email manager instance to use
+        """
         logger.logger.debug(f"Setting email manager: {email_manager}")
         self.email_manager = email_manager
         if self.email_manager:
@@ -167,7 +177,7 @@ class EmailAnalysisTab(QWidget):
         else:
             logger.logger.warning("Email manager is None")
     
-    def refresh_view(self):
+    def refresh_view(self) -> None:
         """Refresh the entire view including folders and emails."""
         logger.logger.debug("Refreshing view")
         if not self.email_manager:
@@ -194,21 +204,31 @@ class EmailAnalysisTab(QWidget):
         except Exception as e:
             logger.logger.error(f"Error refreshing view: {str(e)}")
     
-    def on_account_changed(self, index):
-        """Handle account selection change."""
+    def on_account_changed(self, index: int) -> None:
+        """
+        Handle account selection change.
+        
+        Args:
+            index: Index of the selected account
+        """
         # Clear current view
         self.email_content.clear()
         self.reply_suggestions.clear()
         self.attachment_view.set_attachments([])
         self.refresh_view()
     
-    def on_folder_selected(self, folder_name):
-        """Handle folder selection."""
+    def on_folder_selected(self, folder_name: str) -> None:
+        """
+        Handle folder selection.
+        
+        Args:
+            folder_name: Name of the selected folder
+        """
         logger.logger.debug(f"Selected folder: {folder_name}")
         self.current_folder = folder_name
         self.refresh_emails()
     
-    def refresh_emails(self):
+    def refresh_emails(self) -> None:
         """Fetch and display emails for the current folder."""
         logger.logger.debug("Refreshing emails")
         self.email_tree.clear()
@@ -223,7 +243,9 @@ class EmailAnalysisTab(QWidget):
         
         try:
             # Fetch emails from the selected folder
-            logger.logger.debug(f"Fetching emails from folder: {self.current_folder}")
+            logger.logger.debug(
+                f"Fetching emails from folder: {self.current_folder}"
+            )
             emails = self.email_manager.fetch_emails(
                 folder=self.current_folder,
                 limit=50,
@@ -234,11 +256,15 @@ class EmailAnalysisTab(QWidget):
             # Add emails to the tree
             for email_data in emails:
                 try:
-                    logger.logger.debug(f"Adding email: {email_data.get('subject', 'No subject')} from {email_data.get('from', 'Unknown')}")
+                    logger.logger.debug(
+                        f"Adding email: {email_data.get('subject', 'No subject')} "
+                        f"from {email_data.get('from', 'Unknown')}"
+                    )
                     item = QTreeWidgetItem([
                         email_data.get("subject", "No subject"),
                         email_data.get("from", "Unknown"),
-                        email_data.get("date", "").strftime("%Y-%m-%d %H:%M") if email_data.get("date") else ""
+                        email_data.get("date", "").strftime("%Y-%m-%d %H:%M") 
+                        if email_data.get("date") else ""
                     ])
                     item.setData(0, Qt.ItemDataRole.UserRole, email_data)
                     self.email_tree.addTopLevelItem(item)
@@ -246,12 +272,19 @@ class EmailAnalysisTab(QWidget):
                     logger.logger.error(f"Error adding email to tree: {str(e)}")
                     logger.logger.error(f"Email data: {email_data}")
             
-            logger.logger.debug(f"Email tree now has {self.email_tree.topLevelItemCount()} items")
+            logger.logger.debug(
+                f"Email tree now has {self.email_tree.topLevelItemCount()} items"
+            )
         except Exception as e:
             logger.logger.error(f"Error refreshing emails: {str(e)}")
     
-    def on_email_selected(self, item):
-        """Handle email selection from the tree widget."""
+    def on_email_selected(self, item: QTreeWidgetItem) -> None:
+        """
+        Handle email selection from the tree widget.
+        
+        Args:
+            item: The selected tree widget item
+        """
         email_data = item.data(0, Qt.ItemDataRole.UserRole)
         if email_data:
             self.email_content.setText(email_data["body"])
@@ -264,11 +297,16 @@ class EmailAnalysisTab(QWidget):
             # Get conversation history and analyze
             self._analyze_conversation(email_data)
     
-    def on_attachment_saved(self, save_path):
-        """Handle successful attachment save."""
+    def on_attachment_saved(self, save_path: str) -> None:
+        """
+        Handle successful attachment save.
+        
+        Args:
+            save_path: Path where the attachment was saved
+        """
         logger.logger.info(f"Attachment saved to: {save_path}")
     
-    def generate_reply(self):
+    def generate_reply(self) -> None:
         """Generate AI reply for the selected email."""
         if not self.email_content.toPlainText():
             logger.warning("No email selected for reply generation")
@@ -319,16 +357,22 @@ class EmailAnalysisTab(QWidget):
             if suggestions:
                 # Display suggestions
                 self.reply_suggestions.clear()
-                self.reply_suggestions.append("AI Generated Reply Suggestions:\n")
+                self.reply_suggestions.append(
+                    "AI Generated Reply Suggestions:\n"
+                )
                 for i, suggestion in enumerate(suggestions, 1):
-                    self.reply_suggestions.append(f"\nSuggestion {i}:\n{'-' * 40}\n{suggestion}\n")
+                    self.reply_suggestions.append(
+                        f"\nSuggestion {i}:\n{'-' * 40}\n{suggestion}\n"
+                    )
                 
                 # Enable copy button and feedback
                 self.copy_reply_btn.setEnabled(True)
                 self.feedback_combo.setEnabled(True)
                 self.feedback_combo.setCurrentIndex(0)
             else:
-                self.reply_suggestions.setText("Failed to generate reply suggestions.")
+                self.reply_suggestions.setText(
+                    "Failed to generate reply suggestions."
+                )
                 self.copy_reply_btn.setEnabled(False)
                 self.feedback_combo.setEnabled(False)
         
@@ -342,7 +386,7 @@ class EmailAnalysisTab(QWidget):
         finally:
             self.loading_spinner.stop()
     
-    def copy_reply(self):
+    def copy_reply(self) -> None:
         """Copy selected reply suggestion to clipboard."""
         if self.reply_suggestions.toPlainText():
             # Get selected text or all text if nothing is selected
@@ -355,10 +399,21 @@ class EmailAnalysisTab(QWidget):
             
             # Show success message in status bar
             if hasattr(self.parent(), 'status_bar'):
-                self.parent().status_bar.showMessage("Reply copied to clipboard", 3000)
+                self.parent().status_bar.showMessage(
+                    "Reply copied to clipboard",
+                    3000
+                )
     
     def _get_conversation_history(self, email_data: dict) -> str:
-        """Get conversation history for context."""
+        """
+        Get conversation history for context.
+        
+        Args:
+            email_data: Email data dictionary
+            
+        Returns:
+            String containing the formatted conversation history
+        """
         try:
             # Get references and in-reply-to headers
             references = email_data.get('references', [])
@@ -376,7 +431,8 @@ class EmailAnalysisTab(QWidget):
                 related_email = self.email_manager.get_email_by_message_id(msg_id)
                 if related_email:
                     history.append(
-                        f"On {related_email['date']}, {related_email['from']} wrote:\n"
+                        f"On {related_email['date']}, "
+                        f"{related_email['from']} wrote:\n"
                         f"{related_email['body']}\n"
                     )
             
@@ -387,7 +443,15 @@ class EmailAnalysisTab(QWidget):
             return ""
     
     def _determine_relationship(self, email_data: dict) -> str:
-        """Determine relationship context with sender."""
+        """
+        Determine relationship context with sender.
+        
+        Args:
+            email_data: Email data dictionary
+            
+        Returns:
+            String indicating the relationship type
+        """
         try:
             sender = email_data.get('from', '')
             
@@ -409,11 +473,16 @@ class EmailAnalysisTab(QWidget):
             logger.error(f"Error determining relationship: {str(e)}")
             return 'unknown'
     
-    def _on_feedback_selected(self, index):
-        """Handle feedback selection."""
+    def _on_feedback_selected(self, index: int) -> None:
+        """
+        Handle feedback selection.
+        
+        Args:
+            index: Selected index in the feedback combo box
+        """
         self.submit_feedback_btn.setEnabled(index > 0)
     
-    def submit_feedback(self):
+    def submit_feedback(self) -> None:
         """Submit user feedback for AI-generated replies."""
         try:
             # Get selected email data
@@ -462,7 +531,10 @@ class EmailAnalysisTab(QWidget):
             )
             
             # Show success message
-            self.parent().status_bar.showMessage("Feedback submitted successfully", 3000)
+            self.parent().status_bar.showMessage(
+                "Feedback submitted successfully",
+                3000
+            )
             
             # Reset feedback controls
             self.feedback_combo.setCurrentIndex(0)
@@ -476,8 +548,13 @@ class EmailAnalysisTab(QWidget):
                 f"Failed to submit feedback: {str(e)}"
             )
     
-    def _analyze_conversation(self, email_data: dict):
-        """Analyze conversation history for the selected email."""
+    def _analyze_conversation(self, email_data: dict) -> None:
+        """
+        Analyze conversation history for the selected email.
+        
+        Args:
+            email_data: Email data dictionary
+        """
         try:
             # Show loading spinner
             self.loading_spinner.start()
@@ -505,7 +582,15 @@ class EmailAnalysisTab(QWidget):
             self.loading_spinner.stop()
     
     def _get_conversation_history_data(self, email_data: dict) -> List[Dict]:
-        """Get full conversation history data."""
+        """
+        Get full conversation history data.
+        
+        Args:
+            email_data: Email data dictionary
+            
+        Returns:
+            List of email data dictionaries in chronological order
+        """
         try:
             history = [email_data]  # Start with current email
             

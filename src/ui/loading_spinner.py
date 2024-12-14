@@ -1,4 +1,8 @@
 """
+Loading spinner widget for visual feedback during long-running operations.
+Provides a modern, animated loading indicator that can be centered on its parent widget.
+"""
+
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import Qt, QTimer, QSize
 from PyQt6.QtGui import QPainter, QColor, QPen
