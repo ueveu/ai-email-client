@@ -2,8 +2,11 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
                            QTreeWidget, QTreeWidgetItem, QTextEdit, QPushButton,
                            QLabel, QComboBox)
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QClipboard
 from .folder_tree import FolderTree
+from .attachment_view import AttachmentView
 from email_manager import EmailManager
+from utils.logger import logger
 
 class EmailAnalysisTab(QWidget):
     """
@@ -44,21 +47,34 @@ class EmailAnalysisTab(QWidget):
         self.email_tree.itemClicked.connect(self.on_email_selected)
         splitter.addWidget(self.email_tree)
         
-        # Right side container
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
+        # Right side container with vertical splitter
+        right_splitter = QSplitter(Qt.Orientation.Vertical)
+        
+        # Email content and attachments container
+        email_content_widget = QWidget()
+        email_content_layout = QVBoxLayout(email_content_widget)
         
         # Email content
         self.email_content = QTextEdit()
         self.email_content.setReadOnly(True)
-        right_layout.addWidget(QLabel("Email Content:"))
-        right_layout.addWidget(self.email_content)
+        email_content_layout.addWidget(QLabel("Email Content:"))
+        email_content_layout.addWidget(self.email_content)
+        
+        # Attachment view
+        self.attachment_view = AttachmentView()
+        self.attachment_view.attachment_saved.connect(self.on_attachment_saved)
+        email_content_layout.addWidget(self.attachment_view)
+        
+        right_splitter.addWidget(email_content_widget)
         
         # AI Reply section
-        right_layout.addWidget(QLabel("AI Generated Replies:"))
+        reply_widget = QWidget()
+        reply_layout = QVBoxLayout(reply_widget)
+        
+        reply_layout.addWidget(QLabel("AI Generated Replies:"))
         self.reply_suggestions = QTextEdit()
         self.reply_suggestions.setReadOnly(True)
-        right_layout.addWidget(self.reply_suggestions)
+        reply_layout.addWidget(self.reply_suggestions)
         
         # Buttons
         button_layout = QHBoxLayout()
@@ -73,13 +89,16 @@ class EmailAnalysisTab(QWidget):
         button_layout.addStretch()
         button_layout.addWidget(self.generate_reply_btn)
         button_layout.addWidget(self.copy_reply_btn)
-        right_layout.addLayout(button_layout)
+        reply_layout.addLayout(button_layout)
         
-        splitter.addWidget(right_widget)
+        right_splitter.addWidget(reply_widget)
+        splitter.addWidget(right_splitter)
+        
         layout.addWidget(splitter)
         
-        # Set initial splitter sizes (30% folders, 30% email list, 40% content)
-        splitter.setSizes([300, 300, 400])
+        # Set initial splitter sizes (25% folders, 35% email list, 40% content)
+        splitter.setSizes([250, 350, 400])
+        right_splitter.setSizes([600, 400])  # 60% content, 40% replies
     
     def set_email_manager(self, email_manager):
         """Set the email manager and initialize the view."""
@@ -106,7 +125,10 @@ class EmailAnalysisTab(QWidget):
     
     def on_account_changed(self, index):
         """Handle account selection change."""
-        # TODO: Get account data and create email manager
+        # Clear current view
+        self.email_content.clear()
+        self.reply_suggestions.clear()
+        self.attachment_view.set_attachments([])
         self.refresh_view()
     
     def on_folder_selected(self, folder_name):
@@ -144,6 +166,14 @@ class EmailAnalysisTab(QWidget):
         if email_data:
             self.email_content.setText(email_data["body"])
             self.reply_suggestions.clear()
+            
+            # Update attachment view
+            attachments = email_data.get("attachments", [])
+            self.attachment_view.set_attachments(attachments)
+    
+    def on_attachment_saved(self, save_path):
+        """Handle successful attachment save."""
+        logger.logger.info(f"Attachment saved to: {save_path}")
     
     def generate_reply(self):
         """Generate AI reply for the selected email."""
@@ -152,5 +182,5 @@ class EmailAnalysisTab(QWidget):
     
     def copy_reply(self):
         """Copy selected reply to clipboard."""
-        # TODO: Implement clipboard functionality
-        pass
+        clipboard = QApplication.clipboard()
+        clipboard.setText(self.reply_suggestions.toPlainText())
