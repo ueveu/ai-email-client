@@ -1,15 +1,18 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
                            QTreeWidget, QTreeWidgetItem, QTextEdit, QPushButton,
                            QLabel, QComboBox, QApplication, QMessageBox,
-                           QRadioButton, QButtonGroup)
+                           QRadioButton, QButtonGroup, QTabWidget)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QClipboard
+from datetime import datetime
+from typing import List, Dict
 from .folder_tree import FolderTree
 from .attachment_view import AttachmentView
+from .conversation_analysis_widget import ConversationAnalysisWidget
+from .loading_spinner import LoadingSpinner
 from email_manager import EmailManager
 from utils.logger import logger
 from services.ai_service import AIService
-from .loading_spinner import LoadingSpinner
 
 class EmailAnalysisTab(QWidget):
     """
@@ -54,10 +57,14 @@ class EmailAnalysisTab(QWidget):
         self.email_tree.itemClicked.connect(self.on_email_selected)
         splitter.addWidget(self.email_tree)
         
-        # Right side container with vertical splitter
-        right_splitter = QSplitter(Qt.Orientation.Vertical)
+        # Right side with tabs
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
         
-        # Email content and attachments container
+        # Create tab widget for content and analysis
+        self.content_tabs = QTabWidget()
+        
+        # Email content tab
         email_content_widget = QWidget()
         email_content_layout = QVBoxLayout(email_content_widget)
         
@@ -72,7 +79,13 @@ class EmailAnalysisTab(QWidget):
         self.attachment_view.attachment_saved.connect(self.on_attachment_saved)
         email_content_layout.addWidget(self.attachment_view)
         
-        right_splitter.addWidget(email_content_widget)
+        self.content_tabs.addTab(email_content_widget, "Content")
+        
+        # Conversation Analysis tab
+        self.analysis_widget = ConversationAnalysisWidget()
+        self.content_tabs.addTab(self.analysis_widget, "Analysis")
+        
+        right_layout.addWidget(self.content_tabs)
         
         # AI Reply section
         reply_widget = QWidget()
@@ -132,14 +145,13 @@ class EmailAnalysisTab(QWidget):
         button_layout.addWidget(self.copy_reply_btn)
         reply_layout.addLayout(button_layout)
         
-        right_splitter.addWidget(reply_widget)
-        splitter.addWidget(right_splitter)
+        right_layout.addWidget(reply_widget)
         
+        splitter.addWidget(right_widget)
         layout.addWidget(splitter)
         
-        # Set initial splitter sizes (25% folders, 35% email list, 40% content)
-        splitter.setSizes([250, 350, 400])
-        right_splitter.setSizes([600, 400])  # 60% content, 40% replies
+        # Set initial splitter sizes (20% folders, 30% email list, 50% content)
+        splitter.setSizes([200, 300, 500])
         
         # Connect feedback combo box
         self.feedback_combo.currentIndexChanged.connect(self._on_feedback_selected)
@@ -248,6 +260,9 @@ class EmailAnalysisTab(QWidget):
             # Update attachment view
             attachments = email_data.get("attachments", [])
             self.attachment_view.set_attachments(attachments)
+            
+            # Get conversation history and analyze
+            self._analyze_conversation(email_data)
     
     def on_attachment_saved(self, save_path):
         """Handle successful attachment save."""
@@ -460,3 +475,57 @@ class EmailAnalysisTab(QWidget):
                 "Error",
                 f"Failed to submit feedback: {str(e)}"
             )
+    
+    def _analyze_conversation(self, email_data: dict):
+        """Analyze conversation history for the selected email."""
+        try:
+            # Show loading spinner
+            self.loading_spinner.start()
+            
+            # Get AI service
+            ai_service = self.parent().ai_service
+            if not ai_service or not ai_service.model:
+                return
+            
+            # Get conversation history
+            history = self._get_conversation_history_data(email_data)
+            
+            # Perform analysis
+            analysis_results = ai_service.analyze_conversation_history(history)
+            
+            # Update analysis widget
+            self.analysis_widget.update_analysis(analysis_results)
+            
+            # Switch to analysis tab
+            self.content_tabs.setCurrentWidget(self.analysis_widget)
+            
+        except Exception as e:
+            logger.error(f"Error analyzing conversation: {str(e)}")
+        finally:
+            self.loading_spinner.stop()
+    
+    def _get_conversation_history_data(self, email_data: dict) -> List[Dict]:
+        """Get full conversation history data."""
+        try:
+            history = [email_data]  # Start with current email
+            
+            # Get references and in-reply-to headers
+            references = email_data.get('references', [])
+            in_reply_to = email_data.get('in_reply_to', [])
+            
+            # Combine all message IDs
+            message_ids = list(set(references + in_reply_to))
+            
+            # Get related emails
+            for msg_id in message_ids:
+                related_email = self.email_manager.get_email_by_message_id(msg_id)
+                if related_email:
+                    history.append(related_email)
+            
+            # Sort by date
+            history.sort(key=lambda x: x.get('date', datetime.min))
+            return history
+            
+        except Exception as e:
+            logger.error(f"Error getting conversation history data: {str(e)}")
+            return [email_data]

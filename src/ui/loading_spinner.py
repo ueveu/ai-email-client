@@ -1,121 +1,113 @@
 """
-Loading spinner widget for indicating background operations.
-"""
-
 from PyQt6.QtWidgets import QWidget
-from PyQt6.QtCore import Qt, QTimer, QRect, QSize
+from PyQt6.QtCore import Qt, QTimer, QSize
 from PyQt6.QtGui import QPainter, QColor, QPen
 
 class LoadingSpinner(QWidget):
-    """Widget that shows an animated loading spinner."""
+    """A loading spinner widget that shows an animated spinning circle."""
     
     def __init__(self, parent=None, center_on_parent=True):
         super().__init__(parent)
         
-        # Widget configuration
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        
-        # Spinner properties
-        self.center_on_parent = center_on_parent
+        # Configuration
         self.angle = 0
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.rotate)
-        self.steps = 12
-        self.delay = 80
-        self.dots = []
-        self.current_dot = 0
-        self.size = 32
-        self.width = 3
-        self.color = QColor(61, 174, 233)  # Default blue color
+        self.angular_speed = 5
+        self.size = 40
+        self.line_width = 3
+        self.inner_radius = 10
+        self.color = QColor(0, 120, 212)  # Modern blue color
+        self.num_lines = 12
+        self.line_length = 8
         
-        # Initialize dots
-        for i in range(self.steps):
-            self.dots.append(1.0 - (i / self.steps))
+        # Widget properties
+        self.setFixedSize(self.size, self.size)
+        if parent and center_on_parent:
+            self.move_to_center()
         
-        # Set size
-        self.setFixedSize(self.size + 2, self.size + 2)
-        
-        # Hide initially
+        # Hide by default
         self.hide()
     
-    def rotate(self):
-        """Rotate the spinner by one step."""
-        self.angle = (self.angle + 360 / self.steps) % 360
-        self.update()
+    def move_to_center(self):
+        """Center the spinner on its parent widget."""
+        if self.parent():
+            parent_rect = self.parent().rect()
+            self.move(
+                parent_rect.center().x() - self.width() // 2,
+                parent_rect.center().y() - self.height() // 2
+            )
     
     def start(self):
-        """Start the spinner animation."""
-        self.angle = 0
+        """Start the spinning animation."""
         self.show()
-        self.raise_()
-        self.timer.start(self.delay)
-        
-        if self.center_on_parent and self.parentWidget():
-            self._center_on_parent()
+        if not self.timer.isActive():
+            self.timer.start(50)  # Update every 50ms
     
     def stop(self):
-        """Stop the spinner animation."""
+        """Stop the spinning animation."""
         self.timer.stop()
         self.hide()
     
-    def set_color(self, color: QColor):
-        """Set the spinner color."""
-        self.color = color
+    def rotate(self):
+        """Rotate the spinner by the angular speed."""
+        self.angle = (self.angle + self.angular_speed) % 360
         self.update()
-    
-    def set_size(self, size: int):
-        """Set the spinner size."""
-        self.size = size
-        self.setFixedSize(size + 2, size + 2)
-        self.update()
-    
-    def set_width(self, width: int):
-        """Set the line width of the spinner."""
-        self.width = width
-        self.update()
-    
-    def _center_on_parent(self):
-        """Center the spinner on its parent widget."""
-        if self.parentWidget():
-            parent_rect = self.parentWidget().rect()
-            self.move(
-                parent_rect.center() - self.rect().center()
-            )
     
     def paintEvent(self, event):
-        """Paint the spinner."""
+        """Paint the spinner with fading lines."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        # Calculate center and radius
-        width = self.width
-        center = QRect(0, 0, self.size, self.size).center()
-        radius = (self.size - width) / 2
+        # Calculate center point
+        center = self.rect().center()
         
-        # Draw dots
-        painter.translate(center.x(), center.y())
-        painter.rotate(self.angle)
-        
-        for i in range(self.steps):
-            # Set opacity for current dot
-            color = QColor(self.color)
-            color.setAlphaF(self.dots[i])
+        # Draw lines with varying opacity
+        for i in range(self.num_lines):
+            # Calculate angle for this line
+            line_angle = self.angle + (i * (360 / self.num_lines))
             
+            # Calculate opacity (fade based on angle difference from current angle)
+            angle_diff = (i * (360 / self.num_lines)) % 360
+            opacity = 1.0 - (angle_diff / 360)
+            
+            # Set color with opacity
+            color = QColor(self.color)
+            color.setAlphaF(opacity)
+            
+            # Set pen
             pen = QPen(color)
-            pen.setWidth(width)
+            pen.setWidth(self.line_width)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             painter.setPen(pen)
             
-            # Draw dot
-            painter.drawLine(0, radius, 0, radius - width)
-            painter.rotate(360 / self.steps)
+            # Calculate line positions
+            start_x = center.x() + self.inner_radius * \
+                     self._cos_deg(line_angle)
+            start_y = center.y() + self.inner_radius * \
+                     self._sin_deg(line_angle)
+            end_x = center.x() + (self.inner_radius + self.line_length) * \
+                   self._cos_deg(line_angle)
+            end_y = center.y() + (self.inner_radius + self.line_length) * \
+                   self._sin_deg(line_angle)
+            
+            # Draw line
+            painter.drawLine(
+                int(start_x), int(start_y),
+                int(end_x), int(end_y)
+            )
     
-    def showEvent(self, event):
-        """Handle show event."""
-        if self.center_on_parent:
-            self._center_on_parent()
+    def sizeHint(self) -> QSize:
+        """Return the recommended size for the widget."""
+        return QSize(self.size, self.size)
     
-    def resizeEvent(self, event):
-        """Handle resize event."""
-        if self.center_on_parent:
-            self._center_on_parent() 
+    def _sin_deg(self, angle: float) -> float:
+        """Calculate sine of angle in degrees."""
+        from math import sin, pi
+        return sin(angle * pi / 180)
+    
+    def _cos_deg(self, angle: float) -> float:
+        """Calculate cosine of angle in degrees."""
+        from math import cos, pi
+        return cos(angle * pi / 180)
+""" 
