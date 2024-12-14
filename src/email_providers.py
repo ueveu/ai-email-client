@@ -28,6 +28,7 @@ class Provider(Enum):
 class ProviderConfig:
     """Email provider configuration."""
     name: str
+    domain: str  # Primary domain for the provider (e.g., gmail.com)
     imap_server: str
     imap_port: int
     imap_ssl: bool
@@ -121,6 +122,7 @@ class EmailProviders:
     PROVIDERS = {
         Provider.GMAIL: ProviderConfig(
             name="Gmail",
+            domain="gmail.com",
             imap_server="imap.gmail.com",
             imap_port=993,
             imap_ssl=True,
@@ -144,6 +146,7 @@ class EmailProviders:
         ),
         Provider.OUTLOOK: ProviderConfig(
             name="Outlook",
+            domain="outlook.com",
             imap_server="outlook.office365.com",
             imap_port=993,
             imap_ssl=True,
@@ -166,6 +169,7 @@ class EmailProviders:
         ),
         Provider.YAHOO: ProviderConfig(
             name="Yahoo Mail",
+            domain="yahoo.com",
             imap_server="imap.mail.yahoo.com",
             imap_port=993,
             imap_ssl=True,

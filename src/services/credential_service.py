@@ -395,4 +395,39 @@ class CredentialService:
             return None
         except Exception as e:
             logger.error(f"Error getting OAuth tokens for {email}: {str(e)}")
-            return None 
+            return None
+    
+    def update_token_expiry(self, email: str, expires_in: int):
+        """
+        Update the expiry time for OAuth tokens.
+        
+        Args:
+            email (str): Email address of the account
+            expires_in (int): Number of seconds until token expires
+        """
+        try:
+            # Get existing credentials
+            credentials = self.get_account_credentials(email)
+            if not credentials:
+                logger.error(f"No credentials found for {email}")
+                return
+            
+            # Update expiry times
+            expires_at = datetime.now() + timedelta(seconds=expires_in)
+            credentials['expires_at'] = expires_at.isoformat()
+            credentials['expires_in'] = expires_in
+            credentials['_metadata']['last_modified'] = datetime.now().isoformat()
+            
+            # Re-encrypt and store updated credentials
+            creds_json = json.dumps(credentials)
+            encrypted_creds = self.fernet.encrypt(creds_json.encode())
+            
+            cred_path = self._get_credential_path(email)
+            with open(cred_path, 'wb') as f:
+                f.write(encrypted_creds)
+            
+            logger.debug(f"Updated token expiry for {email}")
+            
+        except Exception as e:
+            logger.error(f"Error updating token expiry for {email}: {str(e)}")
+            raise 
