@@ -8,13 +8,19 @@ from utils.error_handler import ErrorCollection, handle_errors, collect_errors
 from security.credential_manager import CredentialManager
 from email_providers import EmailProviders, Provider
 from config import Config
+from services.credential_service import CredentialService
 
 class AccountManager:
     """Manages email accounts and their configurations."""
     
-    def __init__(self):
-        """Initialize account manager."""
-        self.credential_manager = CredentialManager()
+    def __init__(self, credential_service: CredentialService):
+        """
+        Initialize account manager.
+        
+        Args:
+            credential_service: Service for managing credentials
+        """
+        self.credential_service = credential_service
         self.config = Config()
     
     def get_all_accounts(self) -> List[Dict]:
@@ -81,7 +87,7 @@ class AccountManager:
     
     def remove_account(self, email: str) -> bool:
         """
-        Remove an email account.
+        Remove an account.
         
         Args:
             email (str): Email address
@@ -90,12 +96,11 @@ class AccountManager:
             bool: True if account was removed successfully
         """
         try:
-            # Remove from config
+            # Remove credentials first
+            self.credential_service.delete_email_credentials(email)
+            
+            # Remove account configuration
             self.config.remove_account(email)
-            
-            # Remove credentials
-            self.credential_manager.remove_credentials(email)
-            
             logger.info(f"Removed account: {email}")
             return True
         except Exception as e:
@@ -121,7 +126,7 @@ class AccountManager:
         Returns:
             Optional[Dict]: Account credentials if found
         """
-        return self.credential_manager.get_email_credentials(email)
+        return self.credential_service.get_email_credentials(email)
     
     def store_account_credentials(self, email: str, credentials: Dict) -> bool:
         """
@@ -139,8 +144,23 @@ class AccountManager:
             if not account:
                 return False
             
-            self.credential_manager.store_email_credentials(email, credentials)
+            self.credential_service.store_email_credentials(email, credentials)
             return True
         except Exception as e:
             logger.error(f"Error storing credentials: {str(e)}")
+            return False
+    
+    def save_changes(self) -> bool:
+        """
+        Save any pending changes to the configuration.
+        
+        Returns:
+            bool: True if changes were saved successfully
+        """
+        try:
+            self.config.save()
+            logger.info("Account configuration changes saved")
+            return True
+        except Exception as e:
+            logger.error(f"Error saving account changes: {str(e)}")
             return False 

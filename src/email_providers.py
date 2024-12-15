@@ -64,7 +64,7 @@ class EmailProviders:
         Detect email provider from email address.
         
         Args:
-            email (str): Email address
+            email: Email address
             
         Returns:
             Optional[Provider]: Provider configuration if found

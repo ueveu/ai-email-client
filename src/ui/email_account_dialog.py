@@ -21,8 +21,8 @@ class EmailAccountDialog(QDialog):
     def __init__(self, parent=None, account_data=None):
         """Initialize dialog."""
         super().__init__(parent)
-        self.account_manager = AccountManager()
         self.credential_service = CredentialService()
+        self.account_manager = AccountManager(self.credential_service)
         self.account_data = account_data
         
         # Set dark theme for the entire dialog

@@ -12,6 +12,7 @@ from email_threading import ThreadManager
 from email_attachments import AttachmentManager
 from email_providers import EmailProviders, Provider
 from services.credential_service import CredentialService
+from services.email_operation_service import OperationType
 import os
 import mimetypes
 from utils.logger import logger
@@ -83,7 +84,7 @@ class EmailManager:
     
     def connect_imap(self, credentials: dict) -> bool:
         """
-        Connect to IMAP server.
+        Connect to the IMAP server.
         
         Args:
             credentials: Account credentials
@@ -92,35 +93,48 @@ class EmailManager:
             bool: True if connected successfully
         """
         try:
-            # Disconnect existing connection if any
-            self.disconnect_imap()
+            # Close existing connection if any
+            if self.imap_connection:
+                try:
+                    self.imap_connection.close()
+                    self.imap_connection.logout()
+                except:
+                    pass
+                self.imap_connection = None
             
-            # Get server settings
-            server = self.current_account['imap_server']
-            port = self.current_account['imap_port']
-            use_ssl = self.current_account.get('imap_ssl', True)
+            # Get server settings from credentials
+            imap_server = credentials.get('imap_server')
+            imap_port = credentials.get('imap_port', 993)
+            use_ssl = credentials.get('imap_ssl', True)
             
-            # Create connection
+            # Create SSL context
+            context = ssl.create_default_context()
+            
+            # Connect to IMAP server
             if use_ssl:
-                self.imap_connection = imaplib.IMAP4_SSL(server, port)
+                self.imap_connection = imaplib.IMAP4_SSL(
+                    imap_server,
+                    imap_port,
+                    ssl_context=context
+                )
             else:
-                self.imap_connection = imaplib.IMAP4(server, port)
+                self.imap_connection = imaplib.IMAP4(
+                    imap_server,
+                    imap_port
+                )
             
             # Authenticate
-            if credentials['type'] == 'oauth':
-                auth_string = self._get_oauth_string(
-                    self.current_account['email'],
-                    credentials['tokens']['access_token']
-                )
-                self.imap_connection.authenticate('XOAUTH2', lambda _: auth_string)
-            else:
-                self.imap_connection.login(
-                    self.current_account['email'],
-                    credentials['password']
-                )
+            self.imap_connection.login(
+                credentials['email'],
+                credentials['password']
+            )
             
             logger.debug("Successfully connected to IMAP server")
             return True
+            
+        except imaplib.IMAP4.error as e:
+            logger.error(f"IMAP error: {str(e)}")
+            return False
             
         except Exception as e:
             logger.error(f"Error connecting to IMAP server: {str(e)}")
@@ -128,7 +142,7 @@ class EmailManager:
     
     def connect_smtp(self, credentials: dict) -> bool:
         """
-        Connect to SMTP server.
+        Connect to the SMTP server.
         
         Args:
             credentials: Account credentials
@@ -137,39 +151,41 @@ class EmailManager:
             bool: True if connected successfully
         """
         try:
-            # Disconnect existing connection if any
-            self.disconnect_smtp()
+            # Close existing connection if any
+            if self.smtp_connection:
+                try:
+                    self.smtp_connection.quit()
+                except:
+                    pass
+                self.smtp_connection = None
             
-            # Get server settings
-            server = self.current_account['smtp_server']
-            port = self.current_account['smtp_port']
-            use_ssl = self.current_account.get('smtp_ssl', True)
+            # Get server settings from credentials
+            smtp_server = credentials.get('smtp_server')
+            smtp_port = credentials.get('smtp_port', 587)
+            use_ssl = credentials.get('smtp_ssl', True)
             
-            # Create connection
+            # Create SSL context
+            context = ssl.create_default_context()
+            
+            # Connect to SMTP server
             if use_ssl:
-                self.smtp_connection = smtplib.SMTP(server, port)
-                self.smtp_connection.starttls()
+                self.smtp_connection = smtplib.SMTP(smtp_server, smtp_port)
+                self.smtp_connection.starttls(context=context)
             else:
-                self.smtp_connection = smtplib.SMTP(server, port)
+                self.smtp_connection = smtplib.SMTP(smtp_server, smtp_port)
             
             # Authenticate
-            if credentials['type'] == 'oauth':
-                auth_string = base64.b64encode(
-                    self._get_oauth_string(
-                        self.current_account['email'],
-                        credentials['tokens']['access_token']
-                    )
-                )
-                self.smtp_connection.ehlo()
-                self.smtp_connection.docmd('AUTH', 'XOAUTH2 ' + auth_string.decode())
-            else:
-                self.smtp_connection.login(
-                    self.current_account['email'],
-                    credentials['password']
-                )
+            self.smtp_connection.login(
+                credentials['email'],
+                credentials['password']
+            )
             
             logger.debug("Successfully connected to SMTP server")
             return True
+            
+        except smtplib.SMTPAuthenticationError as e:
+            logger.error(f"SMTP authentication error: {str(e)}")
+            return False
             
         except Exception as e:
             logger.error(f"Error connecting to SMTP server: {str(e)}")
@@ -207,98 +223,116 @@ class EmailManager:
         auth_string = f"user={email}\x01auth=Bearer {access_token}\x01\x01"
         return auth_string.encode('utf-8')
     
-    def fetch_emails(self, folder: str, limit: int = 50) -> List[Dict]:
+    def fetch_emails(self, folder: str = "INBOX", limit: int = 50) -> List[Dict]:
         """
-        Fetch emails from a folder.
+        Fetch emails from the IMAP server.
         
         Args:
-            folder: Folder name to fetch from
+            folder: Folder to fetch from (default: INBOX)
             limit: Maximum number of emails to fetch
             
         Returns:
             List[Dict]: List of email data dictionaries
         """
         try:
-            logger.debug(f"Fetching emails from folder: {folder}")
-            
             if not self.imap_connection:
                 logger.error("No IMAP connection available")
                 return []
             
-            # Handle folder name
-            if isinstance(folder, dict) and 'raw_name' in folder:
-                folder = folder['raw_name']
-            
-            # Quote folder name for IMAP command
-            quoted_name = f'"{folder}"'
-            if not quoted_name.startswith('"'):
-                quoted_name = f'"{quoted_name}"'
-            
             # Select the folder
-            try:
-                self.imap_connection.select(quoted_name)
-            except Exception as e:
-                logger.error(f"Error selecting folder: {str(e)}")
-                return []
+            logger.debug(f"Selecting folder: {folder}")
+            self.imap_connection.select(folder)
             
             # Search for all emails in the folder
-            try:
-                _, message_numbers = self.imap_connection.search(None, 'ALL')
-            except Exception as e:
-                logger.error(f"Error searching folder: {str(e)}")
-                return []
+            _, message_numbers = self.imap_connection.search(None, "ALL")
+            email_ids = message_numbers[0].split()
             
-            # Get the list of message IDs
-            message_ids = message_numbers[0].split()
+            # Get the last N emails (most recent first)
+            start_index = max(0, len(email_ids) - limit)
+            recent_email_ids = email_ids[start_index:]
             
-            # Fetch the most recent emails first (up to limit)
             emails = []
-            for msg_id in reversed(message_ids[:limit]):
+            for email_id in reversed(recent_email_ids):
                 try:
                     # Fetch email data
-                    _, msg_data = self.imap_connection.fetch(msg_id, '(RFC822 FLAGS)')
-                    if not msg_data or not msg_data[0]:
-                        continue
-                    
+                    _, msg_data = self.imap_connection.fetch(email_id, "(RFC822)")
                     email_body = msg_data[0][1]
                     email_message = email.message_from_bytes(email_body)
                     
-                    # Decode email subject
-                    subject, encoding = header.decode_header(email_message['subject'])[0]
-                    if isinstance(subject, bytes):
-                        subject = subject.decode(encoding or 'utf-8', errors='replace')
-                    
                     # Get flags
+                    _, flag_data = self.imap_connection.fetch(email_id, "(FLAGS)")
                     flags = []
-                    if len(msg_data) > 1 and b'FLAGS' in msg_data[1]:
-                        flag_data = msg_data[1].decode('utf-8', errors='replace')
-                        flags = [f.strip() for f in flag_data[flag_data.find('(')+1:flag_data.find(')')].split()]
+                    if flag_data[0]:
+                        flag_match = re.search(r'\(([^)]*)\)', flag_data[0].decode())
+                        if flag_match:
+                            flags = flag_match.group(1).split()
                     
                     # Parse email data
+                    subject = str(header.make_header(header.decode_header(email_message["subject"])))
+                    from_addr = str(header.make_header(header.decode_header(email_message["from"])))
+                    date = email_message["date"]
+                    
+                    # Get email content
+                    html_content = None
+                    text_content = None
+                    attachments = []
+                    
+                    if email_message.is_multipart():
+                        for part in email_message.walk():
+                            content_type = part.get_content_type()
+                            content_disposition = str(part.get("Content-Disposition"))
+                            
+                            try:
+                                body = part.get_payload(decode=True).decode()
+                            except:
+                                continue
+                            
+                            if content_type == "text/plain" and "attachment" not in content_disposition:
+                                text_content = body
+                            elif content_type == "text/html" and "attachment" not in content_disposition:
+                                html_content = body
+                            elif "attachment" in content_disposition:
+                                filename = part.get_filename()
+                                if filename:
+                                    attachments.append({
+                                        'filename': filename,
+                                        'content_type': content_type
+                                    })
+                    else:
+                        content_type = email_message.get_content_type()
+                        try:
+                            body = email_message.get_payload(decode=True).decode()
+                            if content_type == "text/plain":
+                                text_content = body
+                            elif content_type == "text/html":
+                                html_content = body
+                        except:
+                            pass
+                    
+                    # Create email data dictionary
                     email_data = {
-                        'id': msg_id.decode(),
-                        'subject': subject or 'No Subject',
-                        'from': email_message['from'],
-                        'date': email_message['date'],
-                        'text': self._get_email_text(email_message),
-                        'html': self._get_email_html(email_message),
-                        'attachments': self._get_attachments(email_message),
-                        'flags': flags
+                        'message_id': email_id.decode(),
+                        'subject': subject,
+                        'from': from_addr,
+                        'date': date,
+                        'flags': flags,
+                        'html': html_content,
+                        'text': text_content,
+                        'attachments': attachments
                     }
                     
                     emails.append(email_data)
                     
                 except Exception as e:
-                    logger.error(f"Error fetching email {msg_id}: {str(e)}")
+                    logger.error(f"Error processing email {email_id}: {str(e)}")
                     continue
             
-            logger.debug(f"Fetched {len(emails)} emails from folder")
             return emails
             
         except Exception as e:
             logger.error(f"Error fetching emails: {str(e)}")
             return []
-            
+    
     def _get_email_text(self, email_message) -> str:
         """
         Extract text content from email message.
@@ -653,3 +687,65 @@ class EmailManager:
         except Exception as e:
             logger.error(f"Error handling authentication: {str(e)}")
             return False
+    
+    def get_emails(self, account_email: str, credentials: dict, folder: str = "INBOX", limit: int = 50) -> List[Dict]:
+        """
+        Get emails from an account's folder.
+        
+        Args:
+            account_email: Email address of the account
+            credentials: Account credentials
+            folder: Folder to fetch from (default: INBOX)
+            limit: Maximum number of emails to fetch
+            
+        Returns:
+            List[Dict]: List of email data dictionaries
+        """
+        operation_id = None
+        try:
+            # Start operation
+            operation_id = self.operation_service.start_operation(
+                type=OperationType.FETCH,
+                description=f"Fetching emails from {folder}"
+            )
+            
+            # Initialize account if needed
+            if not self.current_account or self.current_account.get('email') != account_email:
+                logger.debug(f"Initializing account: {account_email}")
+                if not self.initialize_account({'email': account_email}, credentials):
+                    self.operation_service.fail_operation(
+                        operation_id,
+                        "Failed to initialize account"
+                    )
+                    return []
+            
+            # Try to get cached emails first
+            cached_emails = self.cache.get_cached_emails(account_email, folder, limit)
+            if cached_emails:
+                logger.debug(f"Using {len(cached_emails)} cached emails")
+                self.operation_service.complete_operation(
+                    operation_id,
+                    True,
+                    f"Loaded {len(cached_emails)} emails from cache"
+                )
+                return cached_emails
+            
+            # Fetch fresh emails
+            emails = self.fetch_emails(folder, limit)
+            
+            # Cache the fetched emails
+            for email_data in emails:
+                self.cache.cache_email(account_email, folder, email_data)
+            
+            self.operation_service.complete_operation(
+                operation_id,
+                True,
+                f"Fetched {len(emails)} emails"
+            )
+            return emails
+            
+        except Exception as e:
+            logger.error(f"Error getting emails: {str(e)}")
+            if operation_id:
+                self.operation_service.fail_operation(operation_id, str(e))
+            return []

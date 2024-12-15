@@ -31,85 +31,160 @@ class OperationStatus(Enum):
 
 @dataclass
 class Operation:
-    """Represents an email operation."""
+    """Data class representing an email operation."""
     id: str
     type: OperationType
     status: OperationStatus
     description: str
-    start_time: datetime
-    end_time: Optional[datetime] = None
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+    error_message: Optional[str] = None
     progress: Optional[int] = None
-    error: Optional[str] = None
-    details: Optional[Dict] = None
 
 class EmailOperationService(QObject):
     """Service for managing email operations."""
     
-    # Signals
-    operation_started = pyqtSignal(str, OperationType)  # id, type
-    operation_updated = pyqtSignal(str, int)  # id, progress
-    operation_completed = pyqtSignal(str, bool, str)  # id, success, message
-    operation_failed = pyqtSignal(str, str)  # id, error
-    operation_cancelled = pyqtSignal(str)  # id
+    # Signals for operation events
+    operation_started = pyqtSignal(Operation)
+    operation_completed = pyqtSignal(Operation)
+    operation_failed = pyqtSignal(Operation)
+    operation_cancelled = pyqtSignal(Operation)
+    operation_progress = pyqtSignal(Operation)
     
     def __init__(self, notification_service: NotificationService):
-        """Initialize the operation service."""
+        """
+        Initialize operation service.
+        
+        Args:
+            notification_service: Service for showing notifications
+        """
         super().__init__()
         self.notification_service = notification_service
         self.active_operations: Dict[str, Operation] = {}
         self.operation_history: List[Operation] = []
-        self.max_history = 100
     
-    def start_operation(
-        self,
-        type: OperationType,
-        description: str,
-        details: Optional[Dict] = None
-    ) -> str:
+    def start_operation(self, type: OperationType, description: str) -> str:
         """
-        Start a new email operation.
+        Start a new operation.
         
         Args:
             type: Type of operation
-            description: Description of the operation
-            details: Additional operation details
+            description: Operation description
             
         Returns:
             str: Operation ID
         """
         try:
-            # Generate unique ID
-            operation_id = f"{type.value}_{datetime.now().timestamp()}"
-            
             # Create operation
             operation = Operation(
-                id=operation_id,
+                id=f"{type.value}_{datetime.now().timestamp()}",
                 type=type,
                 status=OperationStatus.RUNNING,
                 description=description,
-                start_time=datetime.now(),
-                details=details or {}
+                started_at=datetime.now()
             )
             
             # Store operation
-            self.active_operations[operation_id] = operation
+            self.active_operations[operation.id] = operation
+            self.operation_history.append(operation)
+            
+            # Emit signal
+            self.operation_started.emit(operation)
             
             # Show notification
             self.notification_service.show_notification(
-                f"Starting {type.value}",
-                description,
-                NotificationType.INFO
+                title=f"Starting {type.value}",
+                message=description,
+                type=NotificationType.INFO
             )
             
-            # Emit signal
-            self.operation_started.emit(operation_id, type)
-            
-            logger.info(f"Started operation: {description}")
-            return operation_id
+            return operation.id
             
         except Exception as e:
             logger.error(f"Error starting operation: {str(e)}")
             return ""
+    
+    def complete_operation(self, operation_id: str, success: bool, message: str):
+        """
+        Complete an operation.
+        
+        Args:
+            operation_id: ID of the operation
+            success: Whether the operation was successful
+            message: Completion message
+        """
+        try:
+            if operation_id not in self.active_operations:
+                return
+            
+            operation = self.active_operations[operation_id]
+            
+            # Update operation
+            operation.status = OperationStatus.COMPLETED if success else OperationStatus.FAILED
+            operation.completed_at = datetime.now()
+            operation.error_message = None if success else message
+            
+            # Remove from active operations
+            del self.active_operations[operation_id]
+            
+            # Emit signal
+            if success:
+                self.operation_completed.emit(operation)
+            else:
+                self.operation_failed.emit(operation)
+            
+            # Show notification
+            self.notification_service.show_notification(
+                title=f"{operation.type.value.title()} {'completed' if success else 'failed'}",
+                message=message,
+                type=NotificationType.SUCCESS if success else NotificationType.ERROR
+            )
+            
+        except Exception as e:
+            logger.error(f"Error completing operation: {str(e)}")
+    
+    def fail_operation(self, operation_id: str, error_message: str):
+        """
+        Mark an operation as failed.
+        
+        Args:
+            operation_id: ID of the operation
+            error_message: Error message
+        """
+        self.complete_operation(operation_id, False, error_message)
+    
+    def cancel_operation(self, operation_id: str):
+        """
+        Cancel an operation.
+        
+        Args:
+            operation_id: ID of the operation
+        """
+        try:
+            if operation_id not in self.active_operations:
+                return
+            
+            operation = self.active_operations[operation_id]
+            
+            # Update operation
+            operation.status = OperationStatus.CANCELLED
+            operation.completed_at = datetime.now()
+            
+            # Remove from active operations
+            del self.active_operations[operation_id]
+            
+            # Emit signal
+            self.operation_cancelled.emit(operation)
+            
+            # Show notification
+            self.notification_service.show_notification(
+                title=f"{operation.type.value.title()} cancelled",
+                message=f"Operation cancelled: {operation.description}",
+                type=NotificationType.WARNING
+            )
+            
+        except Exception as e:
+            logger.error(f"Error cancelling operation: {str(e)}")
     
     def update_progress(self, operation_id: str, progress: int):
         """
@@ -119,188 +194,53 @@ class EmailOperationService(QObject):
             operation_id: ID of the operation
             progress: Progress value (0-100)
         """
-        if operation_id in self.active_operations:
+        try:
+            if operation_id not in self.active_operations:
+                return
+            
             operation = self.active_operations[operation_id]
-            operation.progress = max(0, min(100, progress))
-            self.operation_updated.emit(operation_id, progress)
-    
-    def complete_operation(self, operation_id: str, success: bool, message: str = ""):
-        """
-        Mark an operation as completed.
-        
-        Args:
-            operation_id: ID of the operation
-            success: Whether operation was successful
-            message: Completion message
-        """
-        if operation_id in self.active_operations:
-            operation = self.active_operations[operation_id]
-            operation.status = OperationStatus.COMPLETED
-            operation.end_time = datetime.now()
             
-            # Move to history
-            self.operation_history.append(operation)
-            if len(self.operation_history) > self.max_history:
-                self.operation_history.pop(0)
-            
-            # Remove from active operations
-            del self.active_operations[operation_id]
-            
-            # Show notification
-            notification_type = (
-                NotificationType.SUCCESS if success
-                else NotificationType.ERROR
-            )
-            self.notification_service.show_notification(
-                f"Operation {operation.type.value} completed",
-                message or operation.description,
-                notification_type
-            )
+            # Update progress
+            operation.progress = progress
             
             # Emit signal
-            self.operation_completed.emit(operation_id, success, message)
+            self.operation_progress.emit(operation)
             
-            logger.info(
-                f"Completed operation {operation.type.value}: "
-                f"{'Success' if success else 'Failed'}"
-            )
-    
-    def fail_operation(self, operation_id: str, error: str):
-        """
-        Mark an operation as failed.
-        
-        Args:
-            operation_id: ID of the operation
-            error: Error message
-        """
-        if operation_id in self.active_operations:
-            operation = self.active_operations[operation_id]
-            operation.status = OperationStatus.FAILED
-            operation.end_time = datetime.now()
-            operation.error = error
-            
-            # Move to history
-            self.operation_history.append(operation)
-            if len(self.operation_history) > self.max_history:
-                self.operation_history.pop(0)
-            
-            # Remove from active operations
-            del self.active_operations[operation_id]
-            
-            # Show notification
-            self.notification_service.show_notification(
-                f"Operation {operation.type.value} failed",
-                error,
-                NotificationType.ERROR
+            # Update notification
+            self.notification_service.update_notification(
+                operation_id,
+                progress=progress
             )
             
-            # Emit signal
-            self.operation_failed.emit(operation_id, error)
-            
-            logger.error(f"Operation failed: {error}")
-    
-    def cancel_operation(self, operation_id: str):
-        """
-        Cancel an active operation.
-        
-        Args:
-            operation_id: ID of the operation to cancel
-        """
-        if operation_id in self.active_operations:
-            operation = self.active_operations[operation_id]
-            operation.status = OperationStatus.CANCELLED
-            operation.end_time = datetime.now()
-            
-            # Move to history
-            self.operation_history.append(operation)
-            if len(self.operation_history) > self.max_history:
-                self.operation_history.pop(0)
-            
-            # Remove from active operations
-            del self.active_operations[operation_id]
-            
-            # Show notification
-            self.notification_service.show_notification(
-                f"Operation {operation.type.value} cancelled",
-                operation.description,
-                NotificationType.WARNING
-            )
-            
-            # Emit signal
-            self.operation_cancelled.emit(operation_id)
-            
-            logger.info(f"Cancelled operation: {operation.description}")
+        except Exception as e:
+            logger.error(f"Error updating operation progress: {str(e)}")
     
     def get_active_operations(self) -> List[Operation]:
-        """Get list of currently active operations."""
+        """
+        Get list of active operations.
+        
+        Returns:
+            List[Operation]: List of active operations
+        """
         return list(self.active_operations.values())
-    
-    def get_operation_history(self) -> List[Operation]:
-        """Get list of historical operations."""
-        return self.operation_history.copy()
     
     def get_operation(self, operation_id: str) -> Optional[Operation]:
         """
-        Get operation by ID.
+        Get a specific operation.
         
         Args:
             operation_id: ID of the operation
             
         Returns:
-            Operation if found, None otherwise
+            Optional[Operation]: Operation if found
         """
-        return self.active_operations.get(operation_id) or next(
-            (op for op in self.operation_history if op.id == operation_id),
-            None
-        )
+        return self.active_operations.get(operation_id)
     
-    def clear_history(self):
-        """Clear operation history."""
-        self.operation_history.clear()
-    
-    def get_stats(self) -> Dict:
+    def get_operation_history(self) -> List[Operation]:
         """
-        Get operation statistics.
+        Get operation history.
         
         Returns:
-            dict: Operation statistics
+            List[Operation]: List of all operations
         """
-        stats = {
-            'total_operations': len(self.operation_history),
-            'active_operations': len(self.active_operations),
-            'success_rate': 0,
-            'average_duration': 0,
-            'by_type': {},
-            'by_status': {}
-        }
-        
-        if self.operation_history:
-            # Calculate success rate
-            successful = sum(
-                1 for op in self.operation_history
-                if op.status == OperationStatus.COMPLETED
-            )
-            stats['success_rate'] = successful / len(self.operation_history)
-            
-            # Calculate average duration
-            durations = [
-                (op.end_time - op.start_time).total_seconds()
-                for op in self.operation_history
-                if op.end_time
-            ]
-            if durations:
-                stats['average_duration'] = sum(durations) / len(durations)
-            
-            # Count by type
-            for op in self.operation_history:
-                if op.type.value not in stats['by_type']:
-                    stats['by_type'][op.type.value] = 0
-                stats['by_type'][op.type.value] += 1
-            
-            # Count by status
-            for op in self.operation_history:
-                if op.status.value not in stats['by_status']:
-                    stats['by_status'][op.status.value] = 0
-                stats['by_status'][op.status.value] += 1
-        
-        return stats 
+        return self.operation_history.copy() 

@@ -1,221 +1,168 @@
-import os
-from pathlib import Path
-from dotenv import load_dotenv
+"""
+Configuration management for the application.
+"""
+
+from typing import Dict, List, Optional
 import json
+import os
 from utils.logger import logger
 
-# Load environment variables from .env file
-load_dotenv()
-
 class Config:
-    """
-    Configuration management for the application.
-    Handles settings, API keys, and account data.
-    """
+    """Configuration management class."""
     
     def __init__(self):
-        """Initialize configuration with default values."""
-        self.app_dir = Path.home() / ".ai-email-assistant"
-        self.accounts_file = self.app_dir / "accounts.json"
-        self.settings_file = self.app_dir / "settings.json"
-        
-        # Create application directory and files if they don't exist
-        self.app_dir.mkdir(parents=True, exist_ok=True)
-        if not self.accounts_file.exists():
-            self._save_accounts([])  # Create empty accounts file
-        if not self.settings_file.exists():
-            self._save_settings(self._get_default_settings())
-        
-        # Initialize accounts list
+        """Initialize configuration."""
+        self.settings_file = "config.json"
+        self.settings = {}
         self.accounts = []
-        
-        # Load configuration files
-        self.settings = self._load_settings()
-        self._load_accounts()  # Load accounts into self.accounts
-        
-        logger.info("Configuration initialized")
+        self.load()
     
-    def _get_default_settings(self):
-        """Get default application settings."""
-        return {
-            "gemini_api_key": os.getenv("GEMINI_API_KEY", ""),
-            "google_client_id": os.getenv("GOOGLE_CLIENT_ID", ""),
-            "google_client_secret": os.getenv("GOOGLE_CLIENT_SECRET", ""),
-            "default_email": "",
-            "theme": "light",
-            "max_emails_to_fetch": 50,
-            "start_minimized": False,
-            "check_updates": True,
-            "auto_connect": True,
-            "notifications": {
-                "enabled": True,
-                "sound": True
-            }
-        }
-    
-    def _load_settings(self):
-        """Load application settings from file."""
-        default_settings = self._get_default_settings()
-        
+    def load(self):
+        """Load configuration from file."""
         try:
-            if self.settings_file.exists():
+            if os.path.exists(self.settings_file):
                 with open(self.settings_file, "r", encoding='utf-8') as f:
-                    loaded_settings = json.load(f)
-                    # Merge with defaults to ensure all required settings exist
-                    return {**default_settings, **loaded_settings}
+                    data = json.load(f)
+                    self.settings = data.get("settings", {})
+                    self.accounts = data.get("accounts", [])
+                logger.debug("Configuration loaded successfully")
             else:
-                self._save_settings(default_settings)
-                return default_settings
+                logger.debug("No configuration file found, using defaults")
+                self._save_settings()
+                
         except Exception as e:
-            logger.error(f"Error loading settings: {str(e)}")
-            return default_settings
+            logger.error(f"Error loading configuration: {str(e)}")
+            self.settings = {}
+            self.accounts = []
     
-    def _save_settings(self, settings):
-        """Save settings to file."""
+    def _save_settings(self, settings=None):
+        """
+        Save settings to file.
+        
+        Args:
+            settings (dict, optional): Settings to save. If None, saves self.settings
+        """
         try:
+            settings_to_save = settings if settings is not None else self.settings
+            logger.debug(f"Saving settings to {self.settings_file}")
             with open(self.settings_file, "w", encoding='utf-8') as f:
-                json.dump(settings, f, indent=4)
+                json.dump(settings_to_save, f, indent=4)
             logger.debug("Settings saved successfully")
+            
         except Exception as e:
             logger.error(f"Error saving settings: {str(e)}")
             raise
     
-    def _load_accounts(self):
-        """Load accounts from file."""
-        try:
-            logger.debug(f"Loading accounts from {self.accounts_file}")
-            with open(self.accounts_file, "r", encoding='utf-8') as f:
-                self.accounts = json.load(f)
-            logger.debug(f"Loaded {len(self.accounts)} accounts")
-        except FileNotFoundError:
-            logger.debug("No accounts file found, creating empty file")
-            self.accounts = []
-            self._save_accounts(self.accounts)
-        except json.JSONDecodeError:
-            logger.error("Invalid accounts file format, creating new file")
-            self.accounts = []
-            self._save_accounts(self.accounts)
-        except Exception as e:
-            logger.error(f"Error loading accounts: {str(e)}")
-            self.accounts = []
-    
-    def _save_accounts(self, accounts=None):
+    def save(self):
         """
-        Save accounts to file.
+        Save all configuration changes to file.
         
-        Args:
-            accounts (list, optional): List of accounts to save. If None, saves self.accounts
+        Returns:
+            bool: True if saved successfully
         """
         try:
-            accounts_to_save = accounts if accounts is not None else self.accounts
-            logger.debug(f"Saving {len(accounts_to_save)} accounts to {self.accounts_file}")
-            with open(self.accounts_file, "w", encoding='utf-8') as f:
-                json.dump(accounts_to_save, f, indent=4)
-            logger.debug("Accounts saved successfully")
+            data = {
+                "settings": self.settings,
+                "accounts": self.accounts
+            }
+            with open(self.settings_file, "w", encoding='utf-8') as f:
+                json.dump(data, f, indent=4)
+            logger.info("Configuration saved successfully")
+            return True
         except Exception as e:
-            logger.error(f"Error saving accounts: {str(e)}")
-            raise
+            logger.error(f"Error saving configuration: {str(e)}")
+            return False
     
-    def get_accounts(self):
+    def get_accounts(self) -> List[Dict]:
         """
         Get list of configured email accounts.
         
         Returns:
-            list: List of account configurations
+            List[Dict]: List of account configurations
         """
-        if not self.accounts:
-            self._load_accounts()  # Reload accounts if empty
-        logger.debug(f"Returning {len(self.accounts)} accounts")
         return self.accounts
     
-    def add_account(self, account_data):
+    def get_account(self, email: str) -> Optional[Dict]:
         """
-        Add a new email account.
+        Get configuration for a specific account.
         
         Args:
-            account_data (dict): Email account configuration
-        """
-        # Validate required fields
-        required_fields = ['email', 'imap_server', 'imap_port', 'smtp_server', 'smtp_port']
-        if not all(field in account_data for field in required_fields):
-            raise ValueError("Missing required account fields")
+            email: Email address of the account
             
-        # Check for duplicate email
-        if any(acc['email'] == account_data['email'] for acc in self.accounts):
-            raise ValueError(f"Account {account_data['email']} already exists")
-        
-        logger.debug(f"Adding account: {account_data['email']}")
-        self.accounts.append(account_data)
-        self._save_accounts()
-        logger.info(f"Added account: {account_data['email']}")
-    
-    def remove_account(self, email):
-        """
-        Remove an email account.
-        
-        Args:
-            email (str): Email address to remove
-        """
-        original_count = len(self.accounts)
-        self.accounts = [acc for acc in self.accounts if acc["email"] != email]
-        
-        if len(self.accounts) == original_count:
-            logger.warning(f"Account {email} not found for removal")
-            return
-        
-        self._save_accounts()
-        logger.info(f"Removed account: {email}")
-    
-    def update_account(self, email, account_data):
-        """
-        Update an existing email account.
-        
-        Args:
-            email (str): Email address to update
-            account_data (dict): New account configuration
-        """
-        # Validate required fields
-        required_fields = ['email', 'imap_server', 'imap_port', 'smtp_server', 'smtp_port']
-        if not all(field in account_data for field in required_fields):
-            raise ValueError("Missing required account fields")
-        
-        updated = False
-        for i, account in enumerate(self.accounts):
-            if account["email"] == email:
-                self.accounts[i] = account_data
-                updated = True
-                break
-                
-        if not updated:
-            raise ValueError(f"Account {email} not found")
-            
-        self._save_accounts()
-        logger.info(f"Updated account: {email}")
-    
-    def get_account(self, email):
-        """
-        Get account data for a specific email.
-        
-        Args:
-            email (str): Email address to look up
-        
         Returns:
-            dict: Account configuration or None if not found
+            Optional[Dict]: Account configuration if found
         """
         for account in self.accounts:
-            if account["email"] == email:
+            if account['email'] == email:
                 return account
-        logger.debug(f"Account {email} not found")
         return None
     
-    def update_settings(self, settings):
+    def add_account(self, account: Dict):
         """
-        Update application settings.
+        Add a new account configuration.
         
         Args:
-            settings (dict): New settings to apply
+            account: Account configuration to add
         """
-        # Merge with existing settings
-        self.settings.update(settings)
-        self._save_settings(self.settings)
-        logger.info("Updated application settings") 
+        if not self.get_account(account['email']):
+            self.accounts.append(account)
+            self.save()
+    
+    def update_account(self, email: str, account_data: Dict):
+        """
+        Update an existing account configuration.
+        
+        Args:
+            email: Email address of the account to update
+            account_data: New account configuration
+        """
+        for i, account in enumerate(self.accounts):
+            if account['email'] == email:
+                self.accounts[i] = account_data
+                self.save()
+                break
+    
+    def remove_account(self, email: str):
+        """
+        Remove an account configuration.
+        
+        Args:
+            email: Email address of the account to remove
+        """
+        self.accounts = [a for a in self.accounts if a['email'] != email]
+        self.save()
+    
+    def get_setting(self, key: str, default=None):
+        """
+        Get a setting value.
+        
+        Args:
+            key: Setting key
+            default: Default value if setting not found
+            
+        Returns:
+            Setting value or default
+        """
+        return self.settings.get(key, default)
+    
+    def set_setting(self, key: str, value):
+        """
+        Set a setting value.
+        
+        Args:
+            key: Setting key
+            value: Setting value
+        """
+        self.settings[key] = value
+        self.save()
+    
+    def remove_setting(self, key: str):
+        """
+        Remove a setting.
+        
+        Args:
+            key: Setting key to remove
+        """
+        if key in self.settings:
+            del self.settings[key]
+            self.save()

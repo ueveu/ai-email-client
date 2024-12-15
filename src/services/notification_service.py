@@ -3,12 +3,14 @@ Service for managing application-wide status notifications.
 """
 
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
-from PyQt6.QtWidgets import QSystemTrayIcon
+from PyQt6.QtWidgets import QSystemTrayIcon, QMenu, QApplication
+from PyQt6.QtGui import QIcon, QPixmap
 from enum import Enum
 from typing import Optional, List, Dict
 from dataclasses import dataclass
 from datetime import datetime
 import json
+import os
 from utils.logger import logger
 
 class NotificationType(Enum):
@@ -28,165 +30,226 @@ class Notification:
     message: str
     timestamp: datetime
     progress: Optional[int] = None  # For progress notifications (0-100)
-    duration: Optional[int] = None  # How long to show in ms, None for persistent
-    action_text: Optional[str] = None  # Text for action button
-    action_callback: Optional[callable] = None  # Callback for action button
+    duration: Optional[int] = None  # Duration in milliseconds
 
 class NotificationService(QObject):
     """Service for managing application notifications."""
     
-    # Signals
+    # Signals for notification events
     notification_added = pyqtSignal(Notification)
-    notification_removed = pyqtSignal(str)  # Emits notification ID
+    notification_removed = pyqtSignal(str)  # Notification ID
     notification_updated = pyqtSignal(Notification)
     
-    def __init__(self, parent=None):
-        """Initialize the notification service."""
-        super().__init__(parent)
-        self.notifications: Dict[str, Notification] = {}
-        self.notification_history: List[Notification] = []
-        self.max_history = 100
-        self.system_tray: Optional[QSystemTrayIcon] = None
+    def __init__(self):
+        """Initialize notification service."""
+        super().__init__()
         
-        # Timer for auto-dismissing notifications
-        self.dismiss_timer = QTimer(self)
-        self.dismiss_timer.timeout.connect(self._check_notifications)
-        self.dismiss_timer.start(1000)  # Check every second
+        # Initialize notification storage
+        self.notifications: List[Notification] = []
+        self.active_notifications: Dict[str, Notification] = {}
+        
+        # Initialize system tray icon if available
+        self.tray_icon = None
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            try:
+                self.tray_icon = QSystemTrayIcon()
+                
+                # Create a default icon if app.png doesn't exist
+                icon_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
+                                       "resources", "icons", "app.png")
+                
+                if os.path.exists(icon_path):
+                    icon = QIcon(icon_path)
+                else:
+                    # Create a simple default icon
+                    pixmap = QPixmap(32, 32)
+                    pixmap.fill(QApplication.palette().color(QApplication.palette().Window))
+                    icon = QIcon(pixmap)
+                
+                self.tray_icon.setIcon(icon)
+                self.tray_icon.setToolTip("AI Email Assistant")
+                
+                # Create context menu
+                menu = QMenu()
+                menu.addAction("Show").triggered.connect(self._show_main_window)
+                menu.addAction("Exit").triggered.connect(QApplication.quit)
+                self.tray_icon.setContextMenu(menu)
+                
+                self.tray_icon.show()
+                logger.debug("System tray icon initialized successfully")
+                
+            except Exception as e:
+                logger.error(f"Error initializing system tray icon: {str(e)}")
+                self.tray_icon = None
     
-    def set_system_tray(self, tray: QSystemTrayIcon):
-        """Set the system tray icon for showing notifications."""
-        self.system_tray = tray
+    def _show_main_window(self):
+        """Show the main application window."""
+        main_window = QApplication.activeWindow()
+        if main_window:
+            main_window.show()
+            main_window.activateWindow()
     
-    def show_notification(
-        self,
-        title: str,
-        message: str,
-        type: NotificationType = NotificationType.INFO,
-        duration: Optional[int] = 5000,  # 5 seconds default
-        progress: Optional[int] = None,
-        action_text: Optional[str] = None,
-        action_callback: Optional[callable] = None
-    ) -> str:
+    def show_notification(self, title: str, message: str, type: NotificationType = NotificationType.INFO,
+                        duration: Optional[int] = 5000, progress: Optional[int] = None) -> str:
         """
-        Show a new notification.
+        Show a notification.
         
         Args:
             title: Notification title
             message: Notification message
-            type: Type of notification
-            duration: How long to show in ms (None for persistent)
+            type: Notification type
+            duration: Duration in milliseconds (None for persistent)
             progress: Progress value (0-100) for progress notifications
-            action_text: Text for action button
-            action_callback: Callback for action button
             
         Returns:
             str: Notification ID
         """
         try:
-            # Generate unique ID
-            notification_id = f"{type.value}_{datetime.now().timestamp()}"
-            
             # Create notification
             notification = Notification(
-                id=notification_id,
+                id=f"{datetime.now().timestamp()}",
                 type=type,
                 title=title,
                 message=message,
                 timestamp=datetime.now(),
                 progress=progress,
-                duration=duration,
-                action_text=action_text,
-                action_callback=action_callback
+                duration=duration
             )
             
             # Store notification
-            self.notifications[notification_id] = notification
-            
-            # Add to history
-            self.notification_history.append(notification)
-            if len(self.notification_history) > self.max_history:
-                self.notification_history.pop(0)
-            
-            # Show system tray notification if available
-            if self.system_tray and self.system_tray.isSystemTrayAvailable():
-                icon = self._get_icon_for_type(type)
-                self.system_tray.showMessage(
-                    title,
-                    message,
-                    icon,
-                    duration if duration else 5000
-                )
+            self.notifications.append(notification)
+            self.active_notifications[notification.id] = notification
             
             # Emit signal
             self.notification_added.emit(notification)
             
-            logger.info(f"Showed notification: {title}")
-            return notification_id
+            # Show system tray notification if available
+            if self.tray_icon and self.tray_icon.isVisible():
+                icon_type = {
+                    NotificationType.INFO: QSystemTrayIcon.MessageIcon.Information,
+                    NotificationType.SUCCESS: QSystemTrayIcon.MessageIcon.Information,
+                    NotificationType.WARNING: QSystemTrayIcon.MessageIcon.Warning,
+                    NotificationType.ERROR: QSystemTrayIcon.MessageIcon.Critical,
+                    NotificationType.PROGRESS: QSystemTrayIcon.MessageIcon.Information
+                }.get(type, QSystemTrayIcon.MessageIcon.Information)
+                
+                self.tray_icon.showMessage(
+                    title,
+                    message,
+                    icon_type,
+                    duration or 5000
+                )
+            
+            # Set up auto-removal timer if duration specified
+            if duration:
+                QTimer.singleShot(duration, lambda: self.remove_notification(notification.id))
+            
+            return notification.id
             
         except Exception as e:
             logger.error(f"Error showing notification: {str(e)}")
             return ""
     
-    def update_progress(self, notification_id: str, progress: int):
+    def update_notification(self, notification_id: str, title: Optional[str] = None,
+                          message: Optional[str] = None, progress: Optional[int] = None):
         """
-        Update the progress of a progress notification.
+        Update an existing notification.
+        
+        Args:
+            notification_id: ID of the notification to update
+            title: New title (optional)
+            message: New message (optional)
+            progress: New progress value (optional)
+        """
+        try:
+            if notification_id not in self.active_notifications:
+                return
+            
+            notification = self.active_notifications[notification_id]
+            
+            # Update fields
+            if title is not None:
+                notification.title = title
+            if message is not None:
+                notification.message = message
+            if progress is not None:
+                notification.progress = progress
+            
+            # Emit signal
+            self.notification_updated.emit(notification)
+            
+            # Update system tray notification if available
+            if self.tray_icon and self.tray_icon.isVisible() and (title is not None or message is not None):
+                icon_type = {
+                    NotificationType.INFO: QSystemTrayIcon.MessageIcon.Information,
+                    NotificationType.SUCCESS: QSystemTrayIcon.MessageIcon.Information,
+                    NotificationType.WARNING: QSystemTrayIcon.MessageIcon.Warning,
+                    NotificationType.ERROR: QSystemTrayIcon.MessageIcon.Critical,
+                    NotificationType.PROGRESS: QSystemTrayIcon.MessageIcon.Information
+                }.get(notification.type, QSystemTrayIcon.MessageIcon.Information)
+                
+                self.tray_icon.showMessage(
+                    notification.title,
+                    notification.message,
+                    icon_type,
+                    notification.duration or 5000
+                )
+            
+        except Exception as e:
+            logger.error(f"Error updating notification: {str(e)}")
+    
+    def remove_notification(self, notification_id: str):
+        """
+        Remove a notification.
+        
+        Args:
+            notification_id: ID of the notification to remove
+        """
+        try:
+            if notification_id not in self.active_notifications:
+                return
+            
+            # Remove from storage
+            notification = self.active_notifications.pop(notification_id)
+            if notification in self.notifications:
+                self.notifications.remove(notification)
+            
+            # Emit signal
+            self.notification_removed.emit(notification_id)
+            
+        except Exception as e:
+            logger.error(f"Error removing notification: {str(e)}")
+    
+    def clear_notifications(self):
+        """Clear all notifications."""
+        try:
+            # Get list of IDs to remove
+            notification_ids = list(self.active_notifications.keys())
+            
+            # Remove each notification
+            for notification_id in notification_ids:
+                self.remove_notification(notification_id)
+            
+        except Exception as e:
+            logger.error(f"Error clearing notifications: {str(e)}")
+    
+    def get_active_notifications(self) -> List[Notification]:
+        """
+        Get list of active notifications.
+        
+        Returns:
+            List[Notification]: List of active notifications
+        """
+        return list(self.active_notifications.values())
+    
+    def get_notification(self, notification_id: str) -> Optional[Notification]:
+        """
+        Get a specific notification.
         
         Args:
             notification_id: ID of the notification
-            progress: New progress value (0-100)
+            
+        Returns:
+            Optional[Notification]: Notification if found
         """
-        if notification_id in self.notifications:
-            notification = self.notifications[notification_id]
-            if notification.type == NotificationType.PROGRESS:
-                notification.progress = max(0, min(100, progress))
-                self.notification_updated.emit(notification)
-    
-    def dismiss_notification(self, notification_id: str):
-        """
-        Dismiss a notification.
-        
-        Args:
-            notification_id: ID of the notification to dismiss
-        """
-        if notification_id in self.notifications:
-            del self.notifications[notification_id]
-            self.notification_removed.emit(notification_id)
-    
-    def get_active_notifications(self) -> List[Notification]:
-        """Get list of currently active notifications."""
-        return list(self.notifications.values())
-    
-    def get_notification_history(self) -> List[Notification]:
-        """Get list of historical notifications."""
-        return self.notification_history.copy()
-    
-    def clear_all(self):
-        """Clear all active notifications."""
-        notification_ids = list(self.notifications.keys())
-        for notification_id in notification_ids:
-            self.dismiss_notification(notification_id)
-    
-    def _check_notifications(self):
-        """Check for notifications that should be auto-dismissed."""
-        current_time = datetime.now()
-        to_dismiss = []
-        
-        for notification in self.notifications.values():
-            if notification.duration:
-                age = (current_time - notification.timestamp).total_seconds() * 1000
-                if age >= notification.duration:
-                    to_dismiss.append(notification.id)
-        
-        for notification_id in to_dismiss:
-            self.dismiss_notification(notification_id)
-    
-    def _get_icon_for_type(self, type: NotificationType) -> QSystemTrayIcon.MessageIcon:
-        """Get system tray icon for notification type."""
-        icon_map = {
-            NotificationType.INFO: QSystemTrayIcon.MessageIcon.Information,
-            NotificationType.SUCCESS: QSystemTrayIcon.MessageIcon.Information,
-            NotificationType.WARNING: QSystemTrayIcon.MessageIcon.Warning,
-            NotificationType.ERROR: QSystemTrayIcon.MessageIcon.Critical,
-            NotificationType.PROGRESS: QSystemTrayIcon.MessageIcon.Information
-        }
-        return icon_map.get(type, QSystemTrayIcon.MessageIcon.Information) 
+        return self.active_notifications.get(notification_id) 
