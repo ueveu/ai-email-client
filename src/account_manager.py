@@ -94,7 +94,7 @@ class AccountManager:
             self.config.remove_account(email)
             
             # Remove credentials
-            self.credential_manager.delete_account_credentials(email)
+            self.credential_manager.remove_credentials(email)
             
             logger.info(f"Removed account: {email}")
             return True
@@ -139,8 +139,7 @@ class AccountManager:
             if not account:
                 return False
             
-            provider = EmailProviders.detect_provider(email)
-            self.credential_manager.store_account_credentials(email, credentials, provider.value)
+            self.credential_manager.store_email_credentials(email, credentials)
             return True
         except Exception as e:
             logger.error(f"Error storing credentials: {str(e)}")
