@@ -545,21 +545,8 @@ class SettingsDialog(QDialog):
     
     def show_manage_accounts(self):
         """Show the full account management dialog."""
-        from .email_accounts_tab import EmailAccountsTab
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Manage Email Accounts")
-        dialog.setMinimumWidth(800)
-        dialog.setMinimumHeight(600)
-        
-        layout = QVBoxLayout(dialog)
-        accounts_tab = EmailAccountsTab(dialog)
-        layout.addWidget(accounts_tab)
-        
-        # Add close button
-        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        button_box.rejected.connect(dialog.reject)
-        layout.addWidget(button_box)
-        
+        from .manage_accounts_dialog import ManageAccountsDialog
+        dialog = ManageAccountsDialog(self)
         if dialog.exec():
             # Refresh settings dialog
             self.load_settings()

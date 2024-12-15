@@ -2,22 +2,21 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QLineEdit,
                            QPushButton, QSpinBox, QCheckBox, QMessageBox,
                            QHBoxLayout, QLabel, QInputDialog, QGroupBox,
                            QStatusBar, QButtonGroup, QRadioButton, QDialogButtonBox,
-                           QTabWidget, QTableWidget, QTableWidgetItem)
+                           QApplication)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon
 import re
 from email_providers import EmailProviders, Provider
 from services.credential_service import CredentialService
+from account_manager import AccountManager
 from utils.logger import logger
 from utils.error_handler import handle_errors
 import imaplib
 import smtplib
 import ssl
-from PyQt6.QtWidgets import QApplication
-from account_manager import AccountManager
 
 class EmailAccountDialog(QDialog):
-    """Dialog for managing email account settings."""
+    """Dialog for adding or editing an email account."""
     
     def __init__(self, parent=None, account_data=None):
         """
@@ -33,168 +32,260 @@ class EmailAccountDialog(QDialog):
         self.account_data = account_data
         self.setup_ui()
         
-        # Load existing accounts
-        self.load_accounts()
-        
         if account_data:
             self.load_account_data(account_data)
     
     def setup_ui(self):
         """Set up the dialog UI components."""
-        self.setWindowTitle("Manage Email Accounts")
+        self.setWindowTitle("Email Account")
         layout = QVBoxLayout(self)
         
-        # Create tab widget for better organization
-        self.tab_widget = QTabWidget()
-        layout.addWidget(self.tab_widget)
+        # Create form layout
+        form_layout = QFormLayout()
         
-        # Create account list widget
-        self.account_list = QTableWidget()
-        self.account_list.setColumnCount(3)
-        self.account_list.setHorizontalHeaderLabels(['Email', 'Server Settings', 'Status'])
-        self.account_list.horizontalHeader().setStretchLastSection(True)
-        self.account_list.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.account_list.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        self.account_list.itemSelectionChanged.connect(self.on_account_selected)
+        # Email field
+        self.email_input = QLineEdit()
+        self.email_input.setPlaceholderText("example@gmail.com")
+        form_layout.addRow("Email:", self.email_input)
         
-        # Add account list to first tab
-        self.tab_widget.addTab(self.account_list, "Accounts")
+        # Password field
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        form_layout.addRow("Password:", self.password_input)
         
-        # Button layout
-        button_layout = QHBoxLayout()
+        # Server settings group
+        server_group = QGroupBox("Server Settings")
+        server_layout = QFormLayout()
         
-        # Add Account button
-        self.add_btn = QPushButton("Add Account")
-        self.add_btn.setIcon(QIcon("resources/icons/add.png"))
-        self.add_btn.clicked.connect(self.add_account)
-        button_layout.addWidget(self.add_btn)
+        # IMAP settings
+        self.imap_server = QLineEdit()
+        self.imap_port = QSpinBox()
+        self.imap_port.setRange(1, 65535)
+        self.imap_port.setValue(993)
+        self.imap_ssl = QCheckBox("Use SSL")
+        self.imap_ssl.setChecked(True)
         
-        # Edit Account button
-        self.edit_btn = QPushButton("Edit Account")
-        self.edit_btn.setIcon(QIcon("resources/icons/edit.png"))
-        self.edit_btn.clicked.connect(self.edit_account)
-        self.edit_btn.setEnabled(False)
-        button_layout.addWidget(self.edit_btn)
+        server_layout.addRow("IMAP Server:", self.imap_server)
+        server_layout.addRow("IMAP Port:", self.imap_port)
+        server_layout.addRow("", self.imap_ssl)
         
-        # Remove Account button
-        self.remove_btn = QPushButton("Remove Account")
-        self.remove_btn.setIcon(QIcon("resources/icons/delete.png"))
-        self.remove_btn.clicked.connect(self.remove_account)
-        self.remove_btn.setEnabled(False)
-        button_layout.addWidget(self.remove_btn)
+        # SMTP settings
+        self.smtp_server = QLineEdit()
+        self.smtp_port = QSpinBox()
+        self.smtp_port.setRange(1, 65535)
+        self.smtp_port.setValue(587)
+        self.smtp_ssl = QCheckBox("Use SSL/TLS")
+        self.smtp_ssl.setChecked(True)
         
-        # Close button
-        self.close_btn = QPushButton("Close")
-        self.close_btn.clicked.connect(self.close)
-        button_layout.addWidget(self.close_btn)
+        server_layout.addRow("SMTP Server:", self.smtp_server)
+        server_layout.addRow("SMTP Port:", self.smtp_port)
+        server_layout.addRow("", self.smtp_ssl)
         
-        layout.addLayout(button_layout)
+        server_group.setLayout(server_layout)
         
-        # Status bar
+        # Add form and server settings to main layout
+        layout.addLayout(form_layout)
+        layout.addWidget(server_group)
+        
+        # Add test connection button
+        test_btn = QPushButton("Test Connection")
+        test_btn.clicked.connect(self.test_connection)
+        layout.addWidget(test_btn)
+        
+        # Add dialog buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | 
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+        
+        # Add status bar
         self.status_bar = QStatusBar()
         layout.addWidget(self.status_bar)
         
-        self.setMinimumWidth(600)
-        self.setMinimumHeight(400)
+        self.setMinimumWidth(400)
+        
+        # Connect email field to auto-detect provider
+        self.email_input.textChanged.connect(self.auto_detect_provider)
     
-    def load_accounts(self):
-        """Load and display existing email accounts."""
-        try:
-            # Clear existing items
-            self.account_list.setRowCount(0)
+    def auto_detect_provider(self, email):
+        """Auto-detect email provider and set server settings."""
+        if not email or '@' not in email:
+            return
             
-            # Get accounts from account manager
-            accounts = self.account_manager.get_all_accounts()
+        provider = EmailProviders.detect_provider(email)
+        if provider:
+            # Set IMAP settings
+            self.imap_server.setText(provider.imap_server)
+            self.imap_port.setValue(provider.imap_port)
+            self.imap_ssl.setChecked(provider.imap_ssl)
             
-            # Add accounts to table
-            for account in accounts:
-                row = self.account_list.rowCount()
-                self.account_list.insertRow(row)
-                
-                # Email column
-                email_item = QTableWidgetItem(account['email'])
-                email_item.setData(Qt.ItemDataRole.UserRole, account)  # Store full account data
-                self.account_list.setItem(row, 0, email_item)
-                
-                # Server settings column
-                server_info = f"IMAP: {account['imap_server']}:{account['imap_port']}\n"
-                server_info += f"SMTP: {account['smtp_server']}:{account['smtp_port']}"
-                server_item = QTableWidgetItem(server_info)
-                self.account_list.setItem(row, 1, server_item)
-                
-                # Status column
-                status_item = QTableWidgetItem("Connected")  # You can update this based on actual connection status
-                self.account_list.setItem(row, 2, status_item)
-            
-            # Adjust column widths
-            self.account_list.resizeColumnsToContents()
-            
-            # Update status
-            self.status_bar.showMessage(f"Loaded {len(accounts)} account(s)")
-            
-        except Exception as e:
-            logger.error(f"Error loading accounts: {str(e)}")
-            self.status_bar.showMessage("Error loading accounts")
+            # Set SMTP settings
+            self.smtp_server.setText(provider.smtp_server)
+            self.smtp_port.setValue(provider.smtp_port)
+            self.smtp_ssl.setChecked(provider.smtp_ssl)
     
-    def on_account_selected(self):
-        """Handle account selection."""
-        selected = len(self.account_list.selectedItems()) > 0
-        self.edit_btn.setEnabled(selected)
-        self.remove_btn.setEnabled(selected)
+    def load_account_data(self, account_data):
+        """Load existing account data into the form."""
+        self.email_input.setText(account_data['email'])
+        self.email_input.setEnabled(False)  # Don't allow email change when editing
+        
+        self.imap_server.setText(account_data['imap_server'])
+        self.imap_port.setValue(account_data['imap_port'])
+        self.imap_ssl.setChecked(account_data.get('imap_ssl', True))
+        
+        self.smtp_server.setText(account_data['smtp_server'])
+        self.smtp_port.setValue(account_data['smtp_port'])
+        self.smtp_ssl.setChecked(account_data.get('smtp_ssl', True))
     
-    def add_account(self):
-        """Add a new email account."""
-        try:
-            dialog = EmailAccountDialog(self)
-            if dialog.exec() == QDialog.DialogCode.Accepted:
-                self.load_accounts()  # Refresh the account list
-                self.status_bar.showMessage("Account added successfully")
-        except Exception as e:
-            logger.error(f"Error adding account: {str(e)}")
-            self.status_bar.showMessage("Error adding account")
+    def get_account_data(self):
+        """Get account data from the form."""
+        return {
+            'email': self.email_input.text(),
+            'imap_server': self.imap_server.text(),
+            'imap_port': self.imap_port.value(),
+            'imap_ssl': self.imap_ssl.isChecked(),
+            'smtp_server': self.smtp_server.text(),
+            'smtp_port': self.smtp_port.value(),
+            'smtp_ssl': self.smtp_ssl.isChecked()
+        }
     
-    def edit_account(self):
-        """Edit the selected email account."""
-        try:
-            selected_items = self.account_list.selectedItems()
-            if not selected_items:
-                    return
-                
-            # Get account data from the first column (email)
-            account_data = self.account_list.item(selected_items[0].row(), 0).data(Qt.ItemDataRole.UserRole)
-            
-            dialog = EmailAccountDialog(self, account_data)
-            if dialog.exec() == QDialog.DialogCode.Accepted:
-                self.load_accounts()  # Refresh the account list
-                self.status_bar.showMessage("Account updated successfully")
-        except Exception as e:
-            logger.error(f"Error editing account: {str(e)}")
-            self.status_bar.showMessage("Error editing account")
-    
-    def remove_account(self):
-        """Remove the selected email account."""
-        try:
-            selected_items = self.account_list.selectedItems()
-            if not selected_items:
-                return
-
-            # Get account data
-            account_data = self.account_list.item(selected_items[0].row(), 0).data(Qt.ItemDataRole.UserRole)
-            
-            # Confirm deletion
-            reply = QMessageBox.question(
+    def accept(self):
+        """Handle dialog acceptance."""
+        account_data = self.get_account_data()
+        
+        # Validate required fields
+        if not all([account_data['email'], account_data['imap_server'], 
+                   account_data['smtp_server'], self.password_input.text()]):
+            QMessageBox.warning(
                 self,
-                "Confirm Deletion",
-                f"Are you sure you want to remove the account {account_data['email']}?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                "Validation Error",
+                "Please fill in all required fields."
             )
+            return
+        
+        try:
+            # Test connection before saving
+            self.status_bar.showMessage("Testing connection...")
+            QApplication.processEvents()  # Update UI
             
-            if reply == QMessageBox.StandardButton.Yes:
-                if self.account_manager.remove_account(account_data['email']):
-                    self.load_accounts()  # Refresh the account list
-                    self.status_bar.showMessage("Account removed successfully")
-            else:
-                    self.status_bar.showMessage("Failed to remove account")
+            if not self.test_connection(show_success_message=False):
+                # Connection test failed, don't save
+                return
+            
+            # Store account data
+            if self.account_data:  # Editing existing account
+                self.account_manager.update_account(account_data['email'], account_data)
+            else:  # Adding new account
+                self.account_manager.add_account(account_data)
+            
+            # Store credentials
+            credentials = {
+                'type': 'password',
+                'password': self.password_input.text()
+            }
+            if not self.credential_service.store_email_credentials(account_data['email'], credentials):
+                raise Exception("Failed to store credentials")
+            
+            self.status_bar.showMessage("Account saved successfully")
+            super().accept()
+            
+        except ValueError as e:
+            logger.error(f"Validation error: {str(e)}")
+            QMessageBox.warning(
+                self,
+                "Validation Error",
+                str(e)
+            )
         except Exception as e:
-            logger.error(f"Error removing account: {str(e)}")
-            self.status_bar.showMessage("Error removing account") 
+            logger.error(f"Error saving account: {str(e)}")
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to save account: {str(e)}"
+            )
+    
+    @handle_errors
+    def test_connection(self, show_success_message=True):
+        """
+        Test the email server connection.
+        
+        Args:
+            show_success_message (bool): Whether to show success message
+            
+        Returns:
+            bool: True if connection test was successful
+        """
+        account_data = self.get_account_data()
+        password = self.password_input.text()
+        
+        if not all([account_data['email'], account_data['imap_server'], 
+                   account_data['smtp_server'], password]):
+            self.status_bar.showMessage("Please fill in all required fields")
+            return False
+        
+        self.status_bar.showMessage("Testing connection...")
+        QApplication.processEvents()  # Update UI
+        
+        try:
+            # Test IMAP connection
+            if account_data['imap_ssl']:
+                imap = imaplib.IMAP4_SSL(account_data['imap_server'], 
+                                       account_data['imap_port'])
+            else:
+                imap = imaplib.IMAP4(account_data['imap_server'], 
+                                   account_data['imap_port'])
+            
+            try:
+                imap.login(account_data['email'], password)
+                imap.logout()
+            except Exception as e:
+                raise Exception(f"IMAP authentication failed: {str(e)}")
+            
+            # Test SMTP connection
+            context = ssl.create_default_context()
+            
+            if account_data['smtp_ssl']:
+                smtp = smtplib.SMTP(account_data['smtp_server'], 
+                                  account_data['smtp_port'])
+                smtp.starttls(context=context)
+            else:
+                smtp = smtplib.SMTP(account_data['smtp_server'], 
+                                  account_data['smtp_port'])
+            
+            try:
+                smtp.login(account_data['email'], password)
+                smtp.quit()
+            except Exception as e:
+                raise Exception(f"SMTP authentication failed: {str(e)}")
+            
+            self.status_bar.showMessage("Connection test successful!")
+            
+            if show_success_message:
+                QMessageBox.information(
+                    self,
+                    "Connection Test",
+                    "Successfully connected to both IMAP and SMTP servers!"
+                )
+            
+            return True
+            
+        except Exception as e:
+            self.status_bar.showMessage("Connection test failed")
+            
+            # Show detailed error message
+            error_msg = str(e)
+            if "Authentication failed" in error_msg:
+                error_msg += "\n\nPlease check your email and password."
+                if "@gmail.com" in account_data['email'].lower():
+                    error_msg += "\n\nFor Gmail accounts, you need to use an App Password. " \
+                               "Go to your Google Account settings to generate one."
+            
+            QMessageBox.critical(
+                self,
+                "Connection Test Failed",
+                f"Error: {error_msg}"
+            )
+            return False 

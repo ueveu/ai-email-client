@@ -579,10 +579,10 @@ class EmailManager:
                 self.imap_connection.authenticate('XOAUTH2', lambda x: auth_string)
             else:
                 # Standard password authentication
-                password = self.credential_service.get_account_credentials(self.email)
-                if not password:
+                credentials = self.credential_service.get_email_credentials(self.email)
+                if not credentials:
                     raise ValueError("No password available for authentication")
-                self.imap_connection.login(self.email, password['password'])
+                self.imap_connection.login(self.email, credentials['password'])
             
             logger.info("Successfully connected to IMAP server")
             return True
