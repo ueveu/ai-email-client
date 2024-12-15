@@ -32,3 +32,25 @@ wheels/
 
 # Application specific
 src/assets/ 
+
+# Virtual environments
+.venv/
+new_env/
+venv/
+
+# Logs
+logs/
+*.log
+
+# Email data
+attachments/
+
+# Credentials
+credentials.json
+*.key
+*.pem
+*.crt
+
+# Cache
+.cache/
+cache/
