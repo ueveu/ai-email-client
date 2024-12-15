@@ -106,7 +106,7 @@ class ManageAccountsDialog(QDialog):
                 
                 # Status column
                 try:
-                    credentials = self.account_manager.get_account_credentials(account['email'])
+                    credentials = self.account_manager.get_email_credentials(account['email'])
                     if credentials:
                         status = "Configured"
                         if credentials.get('type') == 'oauth':
@@ -183,11 +183,12 @@ class ManageAccountsDialog(QDialog):
             )
     
     @handle_errors
-    def remove_account(self):
+    def remove_account(self, event=None):
         """Remove the selected email account."""
         try:
             selected_items = self.account_list.selectedItems()
             if not selected_items:
+                logger.debug("No account selected for removal")
                 return
             
             # Get account data
@@ -203,18 +204,32 @@ class ManageAccountsDialog(QDialog):
             )
             
             if reply == QMessageBox.StandardButton.Yes:
+                logger.info(f"Removing account: {email}")
+                
+                # First remove credentials
+                try:
+                    self.account_manager.credential_manager.remove_credentials(email)
+                    logger.info(f"Credentials removed for account: {email}")
+                except Exception as e:
+                    logger.error(f"Error removing credentials for {email}: {str(e)}")
+                    # Continue with account removal even if credential removal fails
+                
+                # Then remove account configuration
                 if self.account_manager.remove_account(email):
                     self.load_accounts()  # Refresh the account list
-                    self.status_bar.showMessage("Account removed successfully")
+                    self.status_bar.showMessage(f"Account {email} removed successfully")
+                    logger.info(f"Account removed successfully: {email}")
                 else:
-                    raise Exception("Failed to remove account")
+                    raise Exception(f"Failed to remove account: {email}")
+                    
         except Exception as e:
-            logger.error(f"Error removing account: {str(e)}")
+            error_msg = f"Error removing account: {str(e)}"
+            logger.error(error_msg)
             self.status_bar.showMessage("Error removing account")
             QMessageBox.critical(
                 self,
                 "Error",
-                f"Failed to remove account: {str(e)}"
+                error_msg
             )
     
     def showEvent(self, event):

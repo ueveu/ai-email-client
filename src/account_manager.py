@@ -121,7 +121,7 @@ class AccountManager:
         Returns:
             Optional[Dict]: Account credentials if found
         """
-        return self.credential_manager.get_account_credentials(email)
+        return self.credential_manager.get_email_credentials(email)
     
     def store_account_credentials(self, email: str, credentials: Dict) -> bool:
         """

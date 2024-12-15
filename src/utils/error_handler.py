@@ -61,27 +61,37 @@ class ErrorHandler(QObject):
         super().__init__()
         self.error_occurred.connect(self._show_error_dialog)
     
-    def handle_error(self, error: Exception, context: Dict[str, Any] = None):
-        """
-        Handle an error by logging it and notifying the user if needed.
+    def handle_error(self, error, context=None):
+        """Handle an error by logging it and showing a user-friendly message."""
+        error_message = str(error)
+        error_type = type(error).__name__
         
-        Args:
-            error: The exception that occurred
-            context: Additional context about the error
-        """
-        # Log the error
-        logger.log_error(error, context)
+        # Log the error with context
+        if context:
+            logger.error(f"{error_type}: {error_message}")
+            logger.error(f"Error context: {context}")
+        else:
+            logger.error(f"{error_type}: {error_message}")
         
         # Get error details
-        error_type = type(error).__name__
-        error_message = str(error)
         error_traceback = ''.join(traceback.format_exception(
             type(error), error, error.__traceback__
         ))
         
+        # Create user-friendly message
+        user_message = error_message
+        if "account" in error_message.lower():
+            # Special handling for account-related errors
+            if "credentials" in error_message.lower():
+                user_message = "Failed to manage account credentials. Please try again."
+            elif "remove" in error_message.lower():
+                user_message = "Failed to remove the account. Please try again."
+            elif "not found" in error_message.lower():
+                user_message = "The specified account was not found."
+        
         # Emit signal for UI notification
         self.error_occurred.emit(
-            f"{error_type}: {error_message}",
+            user_message,
             error_traceback
         )
     

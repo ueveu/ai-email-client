@@ -39,6 +39,8 @@ class Config:
         """Get default application settings."""
         return {
             "gemini_api_key": os.getenv("GEMINI_API_KEY", ""),
+            "google_client_id": os.getenv("GOOGLE_CLIENT_ID", ""),
+            "google_client_secret": os.getenv("GOOGLE_CLIENT_SECRET", ""),
             "default_email": "",
             "theme": "light",
             "max_emails_to_fetch": 50,
