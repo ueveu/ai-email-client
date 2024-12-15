@@ -13,4 +13,4 @@ requests>=2.31.0
 pillow>=10.0.0
 pyqtwebengine>=5.15.6
 matplotlib>=3.8.0
-imaputf7
+pywin32>=308; sys_platform == 'win32'  # Required for Windows credential store
