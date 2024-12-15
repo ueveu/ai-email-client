@@ -143,34 +143,28 @@ class EmailAccountsTab(QWidget):
             self.load_accounts(self.accounts)
     
     @handle_errors
-    def remove_account(self, confirmed=False):
-        """Remove the selected email account."""
-        selected_items = self.accounts_table.selectedItems()
-        if not selected_items:
-            return
+    def remove_account(self, email: str):
+        """Remove an email account with confirmation."""
+        reply = QMessageBox.question(
+            self,
+            "Confirm Deletion",
+            f"Are you sure you want to delete the account {email}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
         
-        row = selected_items[0].row()
-        email = self.accounts_table.item(row, 0).text()
-        
-        if not confirmed:
-            reply = QMessageBox.question(
-                self,
-                "Confirm Removal",
-                f"Are you sure you want to remove the account {email}?\n\n"
-                "This will delete all account settings and stored credentials.",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No
-            )
-            
-            if reply == QMessageBox.StandardButton.No:
-                return
-        
-        logger.debug(f"Removing account: {email}")
-        self.account_removed.emit(email)
-        
-        # Update accounts list and refresh table
-        self.accounts = [acc for acc in self.accounts if acc['email'] != email]
-        self.load_accounts(self.accounts)
-        
-        # Clear credentials
-        self.credential_manager.remove_email_credentials(email)
+        if reply == QMessageBox.StandardButton.Yes:
+            if self.account_manager.remove_account(email):
+                logger.info(f"Account {email} removed successfully")
+                self.account_removed.emit(email)
+                QMessageBox.information(
+                    self,
+                    "Account Removed",
+                    f"The account {email} has been removed successfully."
+                )
+            else:
+                logger.error(f"Failed to remove account {email}")
+                QMessageBox.critical(
+                    self,
+                    "Removal Failed",
+                    f"Failed to remove the account {email}. Please try again."
+                )

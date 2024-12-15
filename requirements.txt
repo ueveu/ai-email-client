@@ -13,3 +13,4 @@ requests>=2.31.0
 pillow>=10.0.0
 pyqtwebengine>=5.15.6
 matplotlib>=3.8.0
+imaputf7

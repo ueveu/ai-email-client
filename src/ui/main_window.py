@@ -22,6 +22,8 @@ from email_providers import EmailProviders, Provider
 
 from .status_bar_widget import StatusBarWidget
 from .settings_dialog import SettingsDialog
+from .manage_accounts_dialog import ManageAccountsDialog
+from .email_account_dialog import EmailAccountDialog
 from utils.logger import logger
 from .loading_spinner import LoadingSpinner
 from services.network_service import NetworkService
@@ -44,7 +46,7 @@ class MainWindow(QMainWindow):
         
         # Initialize email management
         self.account_manager = AccountManager()
-        self.email_manager = None  # Will be set when account is selected
+        self.email_manager = EmailManager(self.credential_service, self.operation_service)
         
         # Add loading indicators
         self.loading_indicator = LoadingSpinner(self)
@@ -366,22 +368,28 @@ class MainWindow(QMainWindow):
         logger.error(f"Error handled by MainWindow: {error_type} - {error_message}")
     
     def authenticate_account(self, email: str):
-        """Authenticate and connect to an email account."""
+        """Authenticate an email account and update UI."""
         try:
             # Get account credentials
+            credentials = self.credential_service.get_email_credentials(email)
+            if not credentials:
+                logger.error(f"No credentials found for {email}")
+                return False
+            
+            # Initialize email manager with account
             account_data = self.account_manager.get_account(email)
             if not account_data:
                 logger.error(f"No account data found for {email}")
-                return
+                return False
             
-            # Create email manager instance
-            self.email_manager = EmailManager(
-                account_data,
-                self.credential_service,
-                self.operation_service
-            )
+            # Create new email manager instance if needed
+            if not self.email_manager:
+                self.email_manager = EmailManager(self.credential_service, self.operation_service)
             
-            # Set email manager in analysis tab
+            # Initialize account
+            self.email_manager.initialize_account(account_data, credentials)
+            
+            # Update UI components
             self.email_analysis_tab.set_email_manager(self.email_manager)
             
             # Show success notification
@@ -391,13 +399,16 @@ class MainWindow(QMainWindow):
                 NotificationType.SUCCESS
             )
             
+            return True
+            
         except Exception as e:
-            logger.error(f"Error authenticating account: {str(e)}")
+            logger.error(f"Error authenticating account {email}: {str(e)}")
             self.notification_service.show_notification(
-                "Connection Error",
+                "Authentication Error",
                 f"Failed to connect to {email}: {str(e)}",
                 NotificationType.ERROR
             )
+            return False
     
     def load_accounts(self):
         """Load email accounts and connect if auto-connect is enabled."""
@@ -407,19 +418,32 @@ class MainWindow(QMainWindow):
             
             # Get all accounts
             accounts = self.account_manager.get_all_accounts()
+            
+            # Update email analysis tab with accounts
+            self.email_analysis_tab.set_accounts(accounts)
+            
             if not accounts:
                 # Show welcome message if no accounts
                 self.notification_service.show_notification(
                     "Welcome",
-                    "Add an email account to get started",
+                    "Add an email account to get started by clicking File > Add Email Account",
+                    NotificationType.INFO,
                     duration=None  # Persistent until dismissed
                 )
+                # Disable email-related UI elements
+                self.email_analysis_tab.setEnabled(False)
                 return
+            
+            # Enable UI if we have accounts
+            self.email_analysis_tab.setEnabled(True)
             
             if auto_connect:
                 # Connect to the first account
                 first_account = accounts[0]
-                self.authenticate_account(first_account['email'])
+                if first_account:
+                    self.authenticate_account(first_account['email'])
+                    # Set the first account as active in the email analysis tab
+                    self.email_analysis_tab.set_active_account(0)
         
         except Exception as e:
             logger.error(f"Error loading accounts: {str(e)}")
@@ -431,32 +455,33 @@ class MainWindow(QMainWindow):
     
     def show_add_account_dialog(self):
         """Show dialog to add a new email account."""
-        from .email_account_dialog import EmailAccountDialog
-        dialog = EmailAccountDialog(self)
-        if dialog.exec():
-            # Refresh accounts and authenticate new account
-            self.load_accounts()
-            if dialog.account_data:
-                self.authenticate_account(dialog.account_data['email'])
+        try:
+            dialog = EmailAccountDialog(self)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self.load_accounts()
+        except Exception as e:
+            logger.error(f"Error showing add account dialog: {str(e)}")
+            QMessageBox.critical(
+                self,
+                "Error",
+                "Failed to open account setup. Please try again."
+            )
     
     def show_manage_accounts_dialog(self):
-        """Show dialog to manage email accounts."""
-        from .email_accounts_tab import EmailAccountsTab
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Manage Email Accounts")
-        dialog.setMinimumWidth(600)
-        dialog.setMinimumHeight(400)
-        
-        layout = QVBoxLayout(dialog)
-        accounts_tab = EmailAccountsTab(dialog)
-        layout.addWidget(accounts_tab)
-        
-        # Add close button
-        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        button_box.rejected.connect(dialog.reject)
-        layout.addWidget(button_box)
-        
-        dialog.exec()
+        """Show the manage accounts dialog."""
+        try:
+            dialog = ManageAccountsDialog(self)
+            dialog.exec()
+            
+            # Refresh email accounts if needed
+            self.load_accounts()
+        except Exception as e:
+            logger.error(f"Error showing manage accounts dialog: {str(e)}")
+            QMessageBox.critical(
+                self,
+                "Error",
+                "Failed to open account management. Please try again."
+            )
     
     def refresh_accounts(self):
         # Move to background thread

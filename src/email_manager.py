@@ -17,1312 +17,639 @@ import mimetypes
 from utils.logger import logger
 from utils.error_handler import ErrorCollection, handle_errors, collect_errors
 from PyQt6.QtCore import QSettings
-from typing import Optional
+from typing import Optional, List, Dict
+import base64
+import re
+from utils.imap_utf7 import encode_utf7, decode_utf7
+from email import header
+from PyQt6.QtWidgets import QMessageBox
 
 class EmailManager:
-    """
-    Manages email operations including connection handling,
-    email fetching, and sending using IMAP and SMTP protocols.
-    """
+    """Manager for email operations and account handling."""
     
-    def __init__(self, account_data):
+    def __init__(self, credential_service, operation_service):
         """
-        Initialize email manager with account settings.
+        Initialize the email manager.
         
         Args:
-            account_data (dict): Email account configuration
+            credential_service: Service for managing credentials
+            operation_service: Service for managing operations
         """
-        self.account_data = account_data
-        self.credential_service = CredentialService()
+        self.credential_service = credential_service
+        self.operation_service = operation_service
         self.imap_connection = None
         self.smtp_connection = None
-        self.current_folder = None
-        self.is_offline = False
-        
-        # Load settings
-        settings = QSettings('AI Email Assistant', 'Settings')
-        self.use_cache = settings.value('cache/enabled', True, bool)
-        self.cache_attachments = settings.value('cache/attachments', True, bool)
-        self.cache_retention = settings.value('cache/retention_days', 30, int)
-        self.cache_size_limit = settings.value('cache/size_limit_mb', 1000, int) * 1024 * 1024  # Convert to bytes
-        
-        # Initialize managers
+        self.current_account = None
         self.cache = EmailCache()
-        self.thread_manager = ThreadManager()
-        self.attachment_manager = AttachmentManager()
         
-        # Detect provider
-        self.provider = EmailProviders.detect_provider(account_data['email'])
-        self.provider_config = EmailProviders.get_provider_config(self.provider)
-        
-        # Check cache size and clean if needed
-        self._check_cache_size()
-    
-    def _check_cache_size(self):
-        """Check cache size and clean if over limit."""
-        try:
-            cache_info = self.cache.get_cache_size()
-            if cache_info['total_size'] > self.cache_size_limit:
-                logger.info("Cache size over limit, cleaning old data")
-                self.clear_old_cache(self.cache_retention)
-        except Exception as e:
-            logger.error(f"Error checking cache size: {str(e)}")
-    
-    def set_offline_mode(self, offline: bool):
+    def initialize_account(self, account_data: dict, credentials: dict) -> bool:
         """
-        Set offline mode status.
+        Initialize an email account.
         
         Args:
-            offline (bool): Whether to enable offline mode
-        """
-        self.is_offline = offline
-        if offline:
-            # Close connections in offline mode
-            self._close_connections()
-    
-    def _close_connections(self):
-        """Close all active connections."""
-        if self.imap_connection:
-            try:
-                self.imap_connection.close()
-                self.imap_connection.logout()
-            except:
-                pass
-            finally:
-                self.imap_connection = None
-        
-        if self.smtp_connection:
-            try:
-                self.smtp_connection.quit()
-            except:
-                pass
-            finally:
-                self.smtp_connection = None
-    
-    @handle_errors
-    def fetch_emails(self, folder=None, limit=50, offset=0, use_cache=None, thread=True, error_collection=None):
-        """
-        Fetch emails from the specified folder.
-        
-        Args:
-            folder (str, optional): Email folder to fetch from. If None, uses current folder
-            limit (int): Maximum number of emails to fetch
-            offset (int): Number of emails to skip from the start
-            use_cache (bool, optional): Whether to use cached emails. If None, uses setting
-            thread (bool): Whether to group emails into conversation threads
-            error_collection (ErrorCollection, optional): Collection to store multiple errors
+            account_data: Account configuration data
+            credentials: Account credentials
             
         Returns:
-            list: List of email data dictionaries or EmailThread objects
+            bool: True if initialized successfully
         """
-        logger.debug(f"Fetching emails from folder: {folder}, limit: {limit}, offset: {offset}, use_cache: {use_cache}, thread: {thread}")
-        
-        # Use class setting if use_cache not specified
-        if use_cache is None:
-            use_cache = self.use_cache
-        
-        # Force cache usage in offline mode
-        if self.is_offline:
-            use_cache = True
-        
-        # Fetch emails
-        @collect_errors(error_collection, "Fetch Base Emails")
-        def fetch_base():
-            return self._fetch_emails_base(folder, limit, offset, use_cache, error_collection)
-        emails = fetch_base()
-        
-        if not emails:
-            return []
-        
-        logger.debug(f"Fetched {len(emails)} base emails")
-        
-        # Return threaded or unthreaded emails based on parameter
-        if thread:
-            logger.debug("Threading emails")
-            @collect_errors(error_collection, "Process Email Threading")
-            def process_threading():
-                self.thread_manager.process_emails(emails)
-                return self.thread_manager.threads
-            threads = process_threading()
-            logger.debug(f"Created {len(threads) if threads else 0} email threads")
-            return threads or []
-        return emails
-    
-    def _fetch_emails_base(self, folder=None, limit=50, offset=0, use_cache=True, error_collection=None):
-        """Base method for fetching emails without threading."""
-        logger.debug(f"Base fetch - folder: {folder}, current folder: {self.current_folder}")
-        
-        if folder and folder != self.current_folder:
-            @collect_errors(error_collection, f"Select Folder: {folder}")
-            def select_new_folder():
-                return self.select_folder(folder)
-            if not select_new_folder():
-                return []
-        elif not self.current_folder:
-            @collect_errors(error_collection, "Select INBOX")
-            def select_inbox():
-                return self.select_folder('INBOX')
-            if not select_inbox():
-                return []
-        
         try:
-            # Check offline mode or connection status
-            if self.is_offline or (not self.imap_connection and use_cache):
-                # Return cached emails if offline
-                logger.info(f"Using cached emails for {folder} (offline mode)")
-                @collect_errors(error_collection, "Get Cached Emails")
-                def get_cached():
-                    return self.cache.get_cached_emails(
-                        self.account_data['email'],
-                        folder,
-                        limit,
-                        offset
-                    )
-                cached_emails = get_cached()
-                logger.debug(f"Retrieved {len(cached_emails) if cached_emails else 0} cached emails")
-                return cached_emails or []
+            logger.debug(f"Initializing account: {account_data.get('email')}")
             
-            # Try to connect if not in offline mode
-            if not self.imap_connection:
-                @collect_errors(error_collection, "Connect IMAP")
-                def connect():
-                    return self.connect_imap()
-                if not connect():
-                    if use_cache:
-                        # Fall back to cache on connection failure
-                        logger.info("Connection failed, falling back to cache")
-                        return self.cache.get_cached_emails(
-                            self.account_data['email'],
-                            folder,
-                            limit,
-                            offset
-                        )
-                    return []
+            # Store account data
+            self.current_account = account_data
             
-            # Fetch new emails
-            @collect_errors(error_collection, "Search Messages")
-            def search_messages():
-                _, messages = self.imap_connection.search(None, "ALL")
-                return messages[0].split()
-            message_numbers = search_messages()
+            # Connect to servers
+            logger.debug("Connecting to IMAP server...")
+            if not self.connect_imap(credentials):
+                logger.error("Failed to connect to IMAP server")
+                return False
             
-            if not message_numbers:
-                return []
+            logger.debug("Connecting to SMTP server...")
+            if not self.connect_smtp(credentials):
+                logger.error("Failed to connect to SMTP server")
+                return False
             
-            message_numbers.reverse()  # Reverse to get newest first
-            start_index = offset
-            end_index = min(offset + limit, len(message_numbers))
+            # Initialize cache for this account
+            logger.debug("Initializing email cache...")
+            self.cache.initialize_account(account_data['email'])
             
-            logger.debug(f"Processing messages {start_index} to {end_index} of {len(message_numbers)}")
-            
-            email_list = []
-            for num in message_numbers[start_index:end_index]:
-                @collect_errors(error_collection, f"Fetch Message {num}")
-                def fetch_message():
-                    _, msg_data = self.imap_connection.fetch(num, "(RFC822)")
-                    email_message = email.message_from_bytes(msg_data[0][1])
-                    
-                    # Extract email data
-                    email_data = self._parse_email_message(email_message, num)
-                    email_data['folder'] = self.current_folder
-                    
-                    # Cache the email if enabled
-                    if use_cache and self.use_cache:
-                        self.cache.cache_email(
-                            self.account_data['email'],
-                            self.current_folder,
-                            email_data
-                        )
-                    
-                    email_list.append(email_data)
-                fetch_message()
-            
-            logger.debug(f"Successfully fetched {len(email_list)} emails")
-            return email_list
+            logger.debug("Account initialization completed successfully")
+            return True
             
         except Exception as e:
-            if error_collection:
-                error_collection.add(f"Error in _fetch_emails_base: {str(e)}")
-            logger.error(f"Error in _fetch_emails_base: {str(e)}")
-            if use_cache:
-                # Try to get cached emails on error
-                logger.info("Attempting to retrieve cached emails after error")
-                @collect_errors(error_collection, "Get Cached Emails After Error")
-                def get_cached_after_error():
-                    return self.cache.get_cached_emails(
-                        self.account_data['email'],
-                        folder,
-                        limit,
-                        offset
-                    )
-                cached_emails = get_cached_after_error()
-                logger.debug(f"Retrieved {len(cached_emails) if cached_emails else 0} cached emails after error")
-                return cached_emails or []
-            return []
+            logger.error(f"Error initializing account: {str(e)}")
+            return False
     
-    def _parse_email_message(self, email_message, message_id):
-        """Parse email message into a dictionary format."""
-        # Extract basic metadata
-        subject = email.header.decode_header(email_message["subject"])[0][0]
-        if isinstance(subject, bytes):
-            subject = subject.decode()
+    def connect_imap(self, credentials: dict) -> bool:
+        """
+        Connect to IMAP server.
         
-        from_addr = email.header.decode_header(email_message["from"])[0][0]
-        if isinstance(from_addr, bytes):
-            from_addr = from_addr.decode()
+        Args:
+            credentials: Account credentials
+            
+        Returns:
+            bool: True if connected successfully
+        """
+        try:
+            # Disconnect existing connection if any
+            self.disconnect_imap()
+            
+            # Get server settings
+            server = self.current_account['imap_server']
+            port = self.current_account['imap_port']
+            use_ssl = self.current_account.get('imap_ssl', True)
+            
+            # Create connection
+            if use_ssl:
+                self.imap_connection = imaplib.IMAP4_SSL(server, port)
+            else:
+                self.imap_connection = imaplib.IMAP4(server, port)
+            
+            # Authenticate
+            if credentials['type'] == 'oauth':
+                auth_string = self._get_oauth_string(
+                    self.current_account['email'],
+                    credentials['tokens']['access_token']
+                )
+                self.imap_connection.authenticate('XOAUTH2', lambda _: auth_string)
+            else:
+                self.imap_connection.login(
+                    self.current_account['email'],
+                    credentials['password']
+                )
+            
+            logger.debug("Successfully connected to IMAP server")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error connecting to IMAP server: {str(e)}")
+            return False
+    
+    def connect_smtp(self, credentials: dict) -> bool:
+        """
+        Connect to SMTP server.
         
-        date_str = email_message["date"]
-        date = datetime.strptime(date_str, "%a, %d %b %Y %H:%M:%S %z")
+        Args:
+            credentials: Account credentials
+            
+        Returns:
+            bool: True if connected successfully
+        """
+        try:
+            # Disconnect existing connection if any
+            self.disconnect_smtp()
+            
+            # Get server settings
+            server = self.current_account['smtp_server']
+            port = self.current_account['smtp_port']
+            use_ssl = self.current_account.get('smtp_ssl', True)
+            
+            # Create connection
+            if use_ssl:
+                self.smtp_connection = smtplib.SMTP(server, port)
+                self.smtp_connection.starttls()
+            else:
+                self.smtp_connection = smtplib.SMTP(server, port)
+            
+            # Authenticate
+            if credentials['type'] == 'oauth':
+                auth_string = base64.b64encode(
+                    self._get_oauth_string(
+                        self.current_account['email'],
+                        credentials['tokens']['access_token']
+                    )
+                )
+                self.smtp_connection.ehlo()
+                self.smtp_connection.docmd('AUTH', 'XOAUTH2 ' + auth_string.decode())
+            else:
+                self.smtp_connection.login(
+                    self.current_account['email'],
+                    credentials['password']
+                )
+            
+            logger.debug("Successfully connected to SMTP server")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error connecting to SMTP server: {str(e)}")
+            return False
+    
+    def disconnect_imap(self):
+        """Disconnect from IMAP server."""
+        try:
+            if self.imap_connection:
+                self.imap_connection.logout()
+                self.imap_connection = None
+        except Exception as e:
+            logger.error(f"Error disconnecting from IMAP server: {str(e)}")
+    
+    def disconnect_smtp(self):
+        """Disconnect from SMTP server."""
+        try:
+            if self.smtp_connection:
+                self.smtp_connection.quit()
+                self.smtp_connection = None
+        except Exception as e:
+            logger.error(f"Error disconnecting from SMTP server: {str(e)}")
+    
+    def _get_oauth_string(self, email: str, access_token: str) -> bytes:
+        """
+        Get OAuth authentication string.
         
-        # Extract recipients
-        recipients = {
-            'to': self._get_addresses(email_message.get_all('to', [])),
-            'cc': self._get_addresses(email_message.get_all('cc', [])),
-            'bcc': self._get_addresses(email_message.get_all('bcc', []))
-        }
+        Args:
+            email: Email address
+            access_token: OAuth access token
+            
+        Returns:
+            bytes: OAuth authentication string
+        """
+        auth_string = f"user={email}\x01auth=Bearer {access_token}\x01\x01"
+        return auth_string.encode('utf-8')
+    
+    def fetch_emails(self, folder: str, limit: int = 50) -> List[Dict]:
+        """
+        Fetch emails from a folder.
         
-        # Get email body and attachments
-        body = ""
-        attachments = []
+        Args:
+            folder: Folder name to fetch from
+            limit: Maximum number of emails to fetch
+            
+        Returns:
+            List[Dict]: List of email data dictionaries
+        """
+        try:
+            logger.debug(f"Fetching emails from folder: {folder}")
+            
+            if not self.imap_connection:
+                logger.error("No IMAP connection available")
+                return []
+            
+            # Handle folder name
+            if isinstance(folder, dict) and 'raw_name' in folder:
+                folder = folder['raw_name']
+            
+            # Quote folder name for IMAP command
+            quoted_name = f'"{folder}"'
+            if not quoted_name.startswith('"'):
+                quoted_name = f'"{quoted_name}"'
+            
+            # Select the folder
+            try:
+                self.imap_connection.select(quoted_name)
+            except Exception as e:
+                logger.error(f"Error selecting folder: {str(e)}")
+                return []
+            
+            # Search for all emails in the folder
+            try:
+                _, message_numbers = self.imap_connection.search(None, 'ALL')
+            except Exception as e:
+                logger.error(f"Error searching folder: {str(e)}")
+                return []
+            
+            # Get the list of message IDs
+            message_ids = message_numbers[0].split()
+            
+            # Fetch the most recent emails first (up to limit)
+            emails = []
+            for msg_id in reversed(message_ids[:limit]):
+                try:
+                    # Fetch email data
+                    _, msg_data = self.imap_connection.fetch(msg_id, '(RFC822 FLAGS)')
+                    if not msg_data or not msg_data[0]:
+                        continue
+                    
+                    email_body = msg_data[0][1]
+                    email_message = email.message_from_bytes(email_body)
+                    
+                    # Decode email subject
+                    subject, encoding = header.decode_header(email_message['subject'])[0]
+                    if isinstance(subject, bytes):
+                        subject = subject.decode(encoding or 'utf-8', errors='replace')
+                    
+                    # Get flags
+                    flags = []
+                    if len(msg_data) > 1 and b'FLAGS' in msg_data[1]:
+                        flag_data = msg_data[1].decode('utf-8', errors='replace')
+                        flags = [f.strip() for f in flag_data[flag_data.find('(')+1:flag_data.find(')')].split()]
+                    
+                    # Parse email data
+                    email_data = {
+                        'id': msg_id.decode(),
+                        'subject': subject or 'No Subject',
+                        'from': email_message['from'],
+                        'date': email_message['date'],
+                        'text': self._get_email_text(email_message),
+                        'html': self._get_email_html(email_message),
+                        'attachments': self._get_attachments(email_message),
+                        'flags': flags
+                    }
+                    
+                    emails.append(email_data)
+                    
+                except Exception as e:
+                    logger.error(f"Error fetching email {msg_id}: {str(e)}")
+                    continue
+            
+            logger.debug(f"Fetched {len(emails)} emails from folder")
+            return emails
+            
+        except Exception as e:
+            logger.error(f"Error fetching emails: {str(e)}")
+            return []
+            
+    def _get_email_text(self, email_message) -> str:
+        """
+        Extract text content from email message.
         
+        Args:
+            email_message: Email message object
+            
+        Returns:
+            str: Plain text content of the email
+        """
+        text = ""
         if email_message.is_multipart():
             for part in email_message.walk():
                 if part.get_content_type() == "text/plain":
-                    body = part.get_payload(decode=True).decode()
-                elif part.get_content_maintype() != 'multipart':
-                    # Handle attachment
-                    filename = part.get_filename()
-                    if filename:
-                        attachments.append({
-                            'filename': filename,
-                            'content_type': part.get_content_type(),
-                            'content': part.get_payload(decode=True)
-                        })
+                    try:
+                        decoded_text = part.get_payload(decode=True)
+                        if decoded_text:
+                            text += decoded_text.decode('utf-8', errors='replace')
+                    except (UnicodeDecodeError, AttributeError) as e:
+                        logger.warning(f"Error decoding text part: {str(e)}")
+                        continue
         else:
-            body = email_message.get_payload(decode=True).decode()
+            if email_message.get_content_type() == "text/plain":
+                try:
+                    decoded_text = email_message.get_payload(decode=True)
+                    if decoded_text:
+                        text = decoded_text.decode('utf-8', errors='replace')
+                except (UnicodeDecodeError, AttributeError) as e:
+                    logger.warning(f"Error decoding text content: {str(e)}")
+        return text
         
-        # Save attachments and get their info
-        if attachments:
-            attachments = self.attachment_manager.save_attachments(
-                self.account_data['email'],
-                str(message_id),
-                attachments
-            )
-        
-        # Get flags/status
-        flags = []
-        if hasattr(email_message, 'flags'):
-            flags = [str(flag) for flag in email_message.flags]
-        
-        return {
-            "message_id": message_id,
-            "subject": subject,
-            "from": from_addr,
-            "recipients": recipients,
-            "date": date,
-            "body": body,
-            "attachments": attachments,
-            "flags": flags,
-            "metadata": {
-                "headers": dict(email_message.items()),
-                "content_type": email_message.get_content_type()
-            }
-        }
-    
-    def _get_addresses(self, address_list):
-        """Extract email addresses from address list."""
-        if not address_list:
-            return []
-        
-        addresses = []
-        for addr in address_list:
-            if isinstance(addr, str):
-                addresses.append(addr)
-            else:
-                _, addr = email.utils.parseaddr(addr)
-                if addr:
-                    addresses.append(addr)
-        return addresses
-    
-    def clear_old_cache(self, days=None):
+    def _get_email_html(self, email_message) -> str:
         """
-        Clear old cached emails.
+        Extract HTML content from email message.
         
         Args:
-            days (int, optional): Days to keep in cache. If None, uses setting
-        """
-        if days is None:
-            days = self.cache_retention
-        self.cache.clear_old_cache(days)
-        self._check_cache_size()
-    
-    def get_cache_info(self):
-        """
-        Get cache size and statistics.
-        
+            email_message: Email message object
+            
         Returns:
-            dict: Cache information
+            str: HTML content of the email
         """
-        return self.cache.get_cache_size()
-    
-    def clear_cache(self):
-        """Clear all cached data."""
-        self.cache.clear_cache()
-    
-    def update_cache_settings(self, enabled: bool, cache_attachments: bool,
-                            retention_days: int, size_limit_mb: int):
-        """
-        Update cache settings.
-        
-        Args:
-            enabled (bool): Whether to enable caching
-            cache_attachments (bool): Whether to cache attachments
-            retention_days (int): Days to keep cache
-            size_limit_mb (int): Maximum cache size in MB
-        """
-        self.use_cache = enabled
-        self.cache_attachments = cache_attachments
-        self.cache_retention = retention_days
-        self.cache_size_limit = size_limit_mb * 1024 * 1024  # Convert to bytes
-        
-        # Apply new settings
-        if not enabled:
-            self.clear_cache()
+        html = ""
+        if email_message.is_multipart():
+            for part in email_message.walk():
+                if part.get_content_type() == "text/html":
+                    try:
+                        decoded_html = part.get_payload(decode=True)
+                        if decoded_html:
+                            html += decoded_html.decode('utf-8', errors='replace')
+                    except (UnicodeDecodeError, AttributeError) as e:
+                        logger.warning(f"Error decoding HTML part: {str(e)}")
+                        continue
         else:
-            self._check_cache_size()
-    
-    def connect_imap(self):
-        """
-        Establish IMAP connection with the email server.
-        
-        Returns:
-            bool: True if connection successful, False otherwise
-        """
-        try:
-            # Close existing connection if any
-            if self.imap_connection:
+            if email_message.get_content_type() == "text/html":
                 try:
-                    self.imap_connection.close()
-                    self.imap_connection.logout()
-                except:
-                    pass
-            
-            # Create new connection
-            if self.account_data.get('imap_ssl', True):
-                self.imap_connection = imaplib.IMAP4_SSL(
-                    self.account_data['imap_server'],
-                    self.account_data.get('imap_port', 993)
-                )
-            else:
-                self.imap_connection = imaplib.IMAP4(
-                    self.account_data['imap_server'],
-                    self.account_data.get('imap_port', 143)
-                )
-            
-            # Handle OAuth authentication
-            if EmailProviders.is_oauth_provider(self.provider):
-                return self._connect_oauth_imap()
-            
-            # Handle password authentication
-            return self._connect_password_imap()
-            
-        except Exception as e:
-            logger.logger.error(f"IMAP connection error: {str(e)}")
-            return False
-    
-    def _connect_oauth_imap(self):
-        """
-        Authenticate IMAP connection using OAuth.
+                    decoded_html = email_message.get_payload(decode=True)
+                    if decoded_html:
+                        html = decoded_html.decode('utf-8', errors='replace')
+                except (UnicodeDecodeError, AttributeError) as e:
+                    logger.warning(f"Error decoding HTML content: {str(e)}")
+        return html
         
-        Returns:
-            bool: True if authentication successful
-        """
-        try:
-            # Get OAuth tokens
-            tokens = self.credential_service.get_account_credentials(self.account_data['email'])
-            if not tokens or 'access_token' not in tokens:
-                logger.logger.error("No OAuth tokens found")
-                return False
-            
-            # Check if token needs refresh
-            if self.credential_service.needs_token_refresh(self.account_data['email']):
-                logger.logger.info("OAuth token expired, attempting refresh")
-                try:
-                    if 'refresh_token' in tokens:
-                        tokens = EmailProviders.refresh_oauth_token(
-                            self.account_data['email'],
-                            tokens['refresh_token'],
-                            self.provider
-                        )
-                except Exception as refresh_error:
-                    logger.logger.error(f"Token refresh failed: {str(refresh_error)}")
-                    return False
-            
-            # Authenticate with OAuth
-            auth_string = f'user={self.account_data["email"]}\1auth=Bearer {tokens["access_token"]}\1\1'
-            self.imap_connection.authenticate('XOAUTH2', lambda x: auth_string)
-            logger.logger.info(f"OAuth IMAP authentication successful for {self.account_data['email']}")
-            return True
-            
-        except imaplib.IMAP4.error as e:
-            logger.logger.error(f"IMAP OAuth authentication error: {str(e)}")
-            return False
-        except Exception as e:
-            logger.logger.error(f"IMAP OAuth connection error: {str(e)}")
-            return False
-    
-    def _connect_password_imap(self):
-        """
-        Authenticate IMAP connection using password.
-        
-        Returns:
-            bool: True if authentication successful
-        """
-        try:
-            # Get password
-            credentials = self.credential_service.get_account_credentials(self.account_data['email'])
-            if not credentials or 'password' not in credentials:
-                logger.logger.error("No password found")
-                return False
-            
-            # Login with password
-            self.imap_connection.login(
-                self.account_data['email'],
-                credentials['password']
-            )
-            logger.logger.info(f"Password IMAP authentication successful for {self.account_data['email']}")
-            return True
-            
-        except imaplib.IMAP4.error as e:
-            logger.logger.error(f"IMAP password authentication error: {str(e)}")
-            return False
-        except Exception as e:
-            logger.logger.error(f"IMAP password connection error: {str(e)}")
-            return False
-    
-    def connect_smtp(self):
-        """
-        Establish SMTP connection with the email server.
-        
-        Returns:
-            bool: True if connection successful, False otherwise
-        """
-        try:
-            # Close existing connection if any
-            if self.smtp_connection:
-                try:
-                    self.smtp_connection.quit()
-                except:
-                    pass
-            
-            # Create new connection
-            if self.account_data.get('smtp_ssl', True):
-                self.smtp_connection = smtplib.SMTP(
-                    self.account_data['smtp_server'],
-                    self.account_data.get('smtp_port', 587)
-                )
-                self.smtp_connection.starttls()
-            else:
-                self.smtp_connection = smtplib.SMTP(
-                    self.account_data['smtp_server'],
-                    self.account_data.get('smtp_port', 25)
-                )
-            
-            # Handle OAuth authentication
-            if EmailProviders.is_oauth_provider(self.provider):
-                return self._connect_oauth_smtp()
-            
-            # Handle password authentication
-            return self._connect_password_smtp()
-            
-        except Exception as e:
-            logger.logger.error(f"SMTP connection error: {str(e)}")
-            return False
-    
-    def _connect_oauth_smtp(self):
-        """
-        Authenticate SMTP connection using OAuth.
-        
-        Returns:
-            bool: True if authentication successful
-        """
-        try:
-            # Get OAuth tokens
-            tokens = self.credential_service.get_account_credentials(self.account_data['email'])
-            if not tokens or 'access_token' not in tokens:
-                logger.logger.error("No OAuth tokens found")
-                return False
-            
-            # Check if token needs refresh
-            if self.credential_service.needs_token_refresh(self.account_data['email']):
-                logger.logger.info("OAuth token expired, attempting refresh")
-                try:
-                    if 'refresh_token' in tokens:
-                        tokens = EmailProviders.refresh_oauth_token(
-                            self.account_data['email'],
-                            tokens['refresh_token'],
-                            self.provider
-                        )
-                except Exception as refresh_error:
-                    logger.logger.error(f"Token refresh failed: {str(refresh_error)}")
-                    return False
-            
-            # Authenticate with OAuth
-            auth_string = f'user={self.account_data["email"]}\1auth=Bearer {tokens["access_token"]}\1\1'
-            self.smtp_connection.auth('XOAUTH2', lambda x: auth_string)
-            logger.logger.info(f"OAuth SMTP authentication successful for {self.account_data['email']}")
-            return True
-            
-        except smtplib.SMTPAuthenticationError as e:
-            logger.logger.error(f"SMTP OAuth authentication error: {str(e)}")
-            return False
-        except Exception as e:
-            logger.logger.error(f"SMTP OAuth connection error: {str(e)}")
-            return False
-    
-    def _connect_password_smtp(self):
-        """
-        Authenticate SMTP connection using password.
-        
-        Returns:
-            bool: True if authentication successful
-        """
-        try:
-            # Get password
-            credentials = self.credential_service.get_account_credentials(self.account_data['email'])
-            if not credentials or 'password' not in credentials:
-                logger.logger.error("No password found")
-                return False
-            
-            # Login with password
-            self.smtp_connection.login(
-                self.account_data['email'],
-                credentials['password']
-            )
-            logger.logger.info(f"Password SMTP authentication successful for {self.account_data['email']}")
-            return True
-            
-        except smtplib.SMTPAuthenticationError as e:
-            logger.logger.error(f"SMTP password authentication error: {str(e)}")
-            return False
-        except Exception as e:
-            logger.logger.error(f"SMTP password connection error: {str(e)}")
-            return False
-    
-    def disconnect(self):
-        """Close all connections."""
-        try:
-            if self.imap_connection:
-                try:
-                    self.imap_connection.close()
-                    self.imap_connection.logout()
-                except:
-                    pass
-                self.imap_connection = None
-            
-            if self.smtp_connection:
-                try:
-                    self.smtp_connection.quit()
-                except:
-                    pass
-                self.smtp_connection = None
+    def _get_attachments(self, email_message) -> List[Dict]:
+        """Extract attachments from email message."""
+        attachments = []
+        if email_message.is_multipart():
+            for part in email_message.walk():
+                if part.get_content_maintype() == 'multipart':
+                    continue
+                if part.get('Content-Disposition') is None:
+                    continue
                 
-        except Exception as e:
-            logger.logger.error(f"Error disconnecting: {str(e)}")
+                filename = part.get_filename()
+                if filename:
+                    attachments.append({
+                        'filename': filename,
+                        'content_type': part.get_content_type(),
+                        'content': part.get_payload(decode=True)
+                    })
+        return attachments
     
-    def __del__(self):
-        """Ensure connections are closed on deletion."""
-        self.disconnect()
-    
-    def list_folders(self):
+    def list_folders(self) -> List[Dict]:
         """
-        List all available email folders/mailboxes.
+        List all folders in the email account.
         
         Returns:
-            list: List of folder names and their attributes
-                 Each item is a dict with 'name' and 'attributes' keys
+            List[Dict]: List of folder information dictionaries
         """
-        if not self.imap_connection:
-            if not self.connect_imap():
+        try:
+            logger.debug("Listing folders")
+            
+            if not self.imap_connection:
+                logger.error("No IMAP connection available")
                 return []
-        
-        try:
-            # List all folders including those in other character sets
+            
+            # List all folders
             _, folder_list = self.imap_connection.list()
+            
             folders = []
-            
-            for folder_data in folder_list:
-                # Decode the folder data
-                decoded_data = folder_data.decode()
-                # Parse the folder attributes and name
-                attributes = decoded_data.split('(')[1].split(')')[0].split()
-                # Extract folder name, handling quoted names
-                name_start = decoded_data.find('"/"') + 3
-                if name_start == 2:  # If not found, try without quotes
-                    name_start = decoded_data.rfind(' ') + 1
-                name = decoded_data[name_start:].strip('"')
-                
-                # Convert folder name from modified UTF-7 if necessary
+            for folder_info in folder_list:
                 try:
-                    name = bytes(name, 'utf-7').decode('utf-7')
-                except:
-                    pass  # Keep original name if conversion fails
-                
-                folders.append({
-                    'name': name,
-                    'attributes': attributes
-                })
+                    # Parse folder information
+                    decoded = folder_info.decode('utf-8', errors='replace')
+                    
+                    # Extract folder attributes and name
+                    match = re.match(r'\((.*?)\) "(.*?)" "(.*?)"$', decoded.strip())
+                    if not match:
+                        continue
+                        
+                    flags, delimiter, raw_name = match.groups()
+                    
+                    # Decode folder name using custom IMAP UTF-7
+                    name = decode_utf7(raw_name)
+                    
+                    # Create folder info dictionary
+                    folder_data = {
+                        'name': name,
+                        'flags': [f.strip() for f in flags.split()],
+                        'delimiter': delimiter,
+                        'raw_name': raw_name  # Keep raw name for IMAP commands
+                    }
+                    
+                    folders.append(folder_data)
+                    
+                except Exception as e:
+                    logger.error(f"Error parsing folder info: {str(e)}")
+                    continue
             
-            return sorted(folders, key=lambda x: x['name'])
+            return folders
         except Exception as e:
-            print(f"Error listing folders: {str(e)}")
+            logger.error(f"Error listing folders: {str(e)}")
             return []
-    
-    def select_folder(self, folder_name):
-        """
-        Select a folder/mailbox for subsequent operations.
-        
-        Args:
-            folder_name (str): Name of the folder to select
-        
-        Returns:
-            bool: True if folder was selected successfully, False otherwise
-        """
-        if not self.imap_connection:
-            if not self.connect_imap():
-                return False
-        
-        try:
-            result, data = self.imap_connection.select(folder_name)
-            if result == 'OK':
-                self.current_folder = folder_name
-                return True
-            return False
-        except Exception as e:
-            print(f"Error selecting folder {folder_name}: {str(e)}")
-            return False
-    
-    def get_folder_status(self, folder_name):
+            
+    def get_folder_status(self, folder_name: str) -> Optional[Dict]:
         """
         Get status information for a folder.
         
         Args:
-            folder_name (str): Name of the folder
-        
+            folder_name: Name of the folder
+            
         Returns:
-            dict: Folder status information including message counts
+            Optional[Dict]: Folder status information or None if error
         """
-        if not self.imap_connection:
-            if not self.connect_imap():
-                return None
-        
         try:
-            result, data = self.imap_connection.status(
-                folder_name,
-                "(MESSAGES UNSEEN RECENT)"
-            )
-            if result != 'OK':
+            if not self.imap_connection:
+                logger.error("No IMAP connection available")
                 return None
             
-            # Parse status data
-            status_data = data[0].decode()
-            status = {}
+            # Use raw folder name if available (from list_folders)
+            if isinstance(folder_name, dict) and 'raw_name' in folder_name:
+                folder_name = folder_name['raw_name']
             
-            # Extract counts using string manipulation
-            for item in ['MESSAGES', 'UNSEEN', 'RECENT']:
-                start = status_data.find(item) + len(item) + 1
-                end = status_data.find(' ', start)
-                if end == -1:  # If it's the last item
-                    end = status_data.find(')', start)
-                count = int(status_data[start:end])
-                status[item.lower()] = count
+            # Quote folder name for IMAP command
+            quoted_name = f'"{folder_name}"'
+            if not quoted_name.startswith('"'):
+                quoted_name = f'"{quoted_name}"'
             
-            return status
+            # Get status using STATUS command
+            _, data = self.imap_connection.status(
+                quoted_name,
+                '(MESSAGES UNSEEN)'
+            )
+            
+            if not data or not data[0]:
+                return None
+            
+            # Parse status response
+            status_str = data[0].decode('utf-8', errors='replace')
+            messages = 0
+            unseen = 0
+            
+            # Extract counts using string parsing
+            if 'MESSAGES' in status_str:
+                messages_start = status_str.find('MESSAGES') + 9
+                messages_end = status_str.find(' ', messages_start)
+                if messages_end == -1:
+                    messages_end = status_str.find(')', messages_start)
+                if messages_end != -1:
+                    messages = int(status_str[messages_start:messages_end])
+            
+            if 'UNSEEN' in status_str:
+                unseen_start = status_str.find('UNSEEN') + 7
+                unseen_end = status_str.find(' ', unseen_start)
+                if unseen_end == -1:
+                    unseen_end = status_str.find(')', unseen_start)
+                if unseen_end != -1:
+                    unseen = int(status_str[unseen_start:unseen_end])
+            
+            return {
+                'messages': messages,
+                'unseen': unseen
+            }
+            
         except Exception as e:
-            print(f"Error getting folder status: {str(e)}")
+            logger.error(f"Error getting folder status: {str(e)}")
             return None
     
-    @handle_errors
-    def sync_folders(self, error_collection=None) -> bool:
+    def set_active_account(self, account_data: dict) -> bool:
         """
-        Synchronize folders with the server.
+        Set the active email account.
         
         Args:
-            error_collection (ErrorCollection, optional): Collection to store multiple errors
+            account_data: Account configuration data
             
         Returns:
-            bool: True if sync was successful, False otherwise
+            bool: True if account was set successfully
         """
-        logger.logger.debug("Starting folder synchronization")
-        
-        if not self.imap_connection:
-            if not self.connect_imap():
-                error_collection.add("Failed to connect to IMAP server")
-                return False
-        
         try:
-            # List all folders
-            @collect_errors(error_collection, "List Folders")
-            def list_all_folders():
-                return self.list_folders()
-            folders = list_all_folders()
-            
-            if not folders:
+            # Get credentials for the account
+            email = account_data['email']
+            credentials = self.credential_service.get_email_credentials(email)
+            if not credentials:
+                logger.error(f"No credentials found for {email}")
                 return False
             
-            # Get status for each folder
-            for folder in folders:
-                @collect_errors(error_collection, f"Get Status: {folder['name']}")
-                def get_folder_status():
-                    status = self.get_folder_status(folder['name'])
-                    if status:
-                        folder['status'] = status
-                get_folder_status()
-            
-            logger.logger.debug(f"Synchronized {len(folders)} folders")
-            return True
+            # Initialize the account
+            return self.initialize_account(account_data, credentials)
             
         except Exception as e:
-            if error_collection:
-                error_collection.add(f"Error synchronizing folders: {str(e)}")
-            logger.logger.error(f"Error synchronizing folders: {str(e)}")
+            logger.error(f"Error setting active account: {str(e)}")
             return False
     
-    @handle_errors
-    def send_email(self, to_addr, subject, body, cc=None, bcc=None, attachments=None, error_collection=None):
-        """
-        Send an email using the configured SMTP settings.
-        
-        Args:
-            to_addr (str): Recipient email addresses (comma-separated)
-            subject (str): Email subject
-            body (str): Email body text
-            cc (str, optional): CC recipients (comma-separated)
-            bcc (str, optional): BCC recipients (comma-separated)
-            attachments (list, optional): List of attachment file paths
-            error_collection (ErrorCollection, optional): Collection to store multiple errors
-            
-        Returns:
-            bool: True if sent successfully, False otherwise
-        """
-        if not self.smtp_connection:
-            @collect_errors(error_collection, "Connect SMTP")
-            def connect():
-                return self.connect_smtp()
-            if not connect():
-                return False
-        
-        try:
-            @collect_errors(error_collection, "Prepare Email Message")
-            def prepare_message():
-                msg = MIMEMultipart()
-                msg["From"] = self.account_data["email"]
-                msg["To"] = to_addr
-                msg["Subject"] = subject
-                
-                if cc:
-                    msg["Cc"] = cc
-                if bcc:
-                    msg["Bcc"] = bcc
-                
-                msg.attach(MIMEText(body, "plain"))
-                return msg
-            
-            msg = prepare_message()
-            if not msg:
-                return False
-            
-            # Add attachments if any
-            if attachments:
-                for filepath in attachments:
-                    @collect_errors(error_collection, f"Add Attachment: {filepath}")
-                    def add_attachment():
-                        with open(filepath, 'rb') as f:
-                            part = MIMEBase('application', 'octet-stream')
-                            part.set_payload(f.read())
-                            
-                        encoders.encode_base64(part)
-                        
-                        # Set filename in header
-                        filename = os.path.basename(filepath)
-                        part.add_header(
-                            'Content-Disposition',
-                            f'attachment; filename="{filename}"'
-                        )
-                        
-                        # Try to guess content type
-                        content_type, _ = mimetypes.guess_type(filepath)
-                        if content_type:
-                            main_type, sub_type = content_type.split('/', 1)
-                            part.set_type(content_type)
-                        
-                        msg.attach(part)
-                    add_attachment()
-            
-            # Build recipient list
-            recipients = []
-            recipients.extend(addr.strip() for addr in to_addr.split(','))
-            if cc:
-                recipients.extend(addr.strip() for addr in cc.split(','))
-            if bcc:
-                recipients.extend(addr.strip() for addr in bcc.split(','))
-            
-            # Send the email
-            @collect_errors(error_collection, "Send Message")
-            def send():
-                self.smtp_connection.send_message(msg, to_addrs=recipients)
-                return True
-            return send() or False
-            
-        except Exception as e:
-            if error_collection:
-                error_collection.add(f"Error sending email: {str(e)}")
-            logger.logger.error(f"Error sending email: {str(e)}")
-            return False
-    
-    def close_connections(self):
-        """Close all active email connections."""
-        if self.imap_connection:
-            try:
-                self.imap_connection.close()
-                self.imap_connection.logout()
-            except:
-                pass
-        
-        if self.smtp_connection:
-            try:
-                self.smtp_connection.quit()
-            except:
-                pass 
-    
-    def get_thread_for_email(self, message_id):
-        """
-        Get the conversation thread for a specific email.
-        
-        Args:
-            message_id (str): Message ID to find thread for
-        
-        Returns:
-            EmailThread: Thread containing the email, or None
-        """
-        return self.thread_manager.get_thread_for_email(message_id)
-    
-    def get_threads_by_subject(self, subject):
-        """
-        Find conversation threads by subject.
-        
-        Args:
-            subject (str): Subject to search for
-        
-        Returns:
-            list: List of matching threads
-        """
-        return self.thread_manager.get_threads_by_subject(subject)
-    
-    def get_threads_by_participant(self, email_address):
-        """
-        Find conversation threads involving a specific participant.
-        
-        Args:
-            email_address (str): Participant's email address
-        
-        Returns:
-            list: List of matching threads
-        """
-        return self.thread_manager.get_threads_by_participant(email_address)
-    
-    def get_attachment_path(self, message_id, filename):
-        """
-        Get the path to a saved attachment.
-        
-        Args:
-            message_id (str): ID of the email message
-            filename (str): Name of the attachment file
-        
-        Returns:
-            str: Path to the attachment if found, None otherwise
-        """
-        return self.attachment_manager.get_attachment_path(
-            self.account_data['email'],
-            str(message_id),
-            filename
-        )
-    
-    def cleanup_old_attachments(self, max_age_days=30):
-        """Clean up attachments older than specified age."""
-        self.attachment_manager.cleanup_old_attachments(max_age_days)
-    
-    def get_attachment_storage_info(self):
-        """Get information about attachment storage."""
-        return self.attachment_manager.get_storage_info()
-    
-    def create_folder(self, folder_name: str) -> bool:
-        """
-        Create a new email folder/mailbox.
-        
-        Args:
-            folder_name (str): Name of the folder to create
-            
-        Returns:
-            bool: True if folder was created successfully, False otherwise
-        """
-        logger.logger.debug(f"Creating folder: {folder_name}")
-        if not self.imap_connection:
-            if not self.connect_imap():
-                return False
-        
-        try:
-            result = self.imap_connection.create(folder_name)
-            success = result[0] == 'OK'
-            if success:
-                logger.logger.info(f"Created folder: {folder_name}")
-            else:
-                logger.logger.error(f"Failed to create folder: {folder_name}")
-            return success
-        except Exception as e:
-            logger.logger.error(f"Error creating folder {folder_name}: {str(e)}")
-            return False
-    
-    def delete_folder(self, folder_name: str) -> bool:
-        """
-        Delete an email folder/mailbox.
-        
-        Args:
-            folder_name (str): Name of the folder to delete
-            
-        Returns:
-            bool: True if folder was deleted successfully, False otherwise
-        """
-        logger.logger.debug(f"Deleting folder: {folder_name}")
-        if not self.imap_connection:
-            if not self.connect_imap():
-                return False
-        
-        try:
-            # First, select a different folder if the current one is being deleted
-            if self.current_folder == folder_name:
-                self.select_folder('INBOX')
-            
-            result = self.imap_connection.delete(folder_name)
-            success = result[0] == 'OK'
-            if success:
-                logger.logger.info(f"Deleted folder: {folder_name}")
-            else:
-                logger.logger.error(f"Failed to delete folder: {folder_name}")
-            return success
-        except Exception as e:
-            logger.logger.error(f"Error deleting folder {folder_name}: {str(e)}")
-            return False
-    
-    def rename_folder(self, old_name: str, new_name: str) -> bool:
-        """
-        Rename an email folder/mailbox.
-        
-        Args:
-            old_name (str): Current folder name
-            new_name (str): New folder name
-            
-        Returns:
-            bool: True if folder was renamed successfully, False otherwise
-        """
-        logger.logger.debug(f"Renaming folder from {old_name} to {new_name}")
-        if not self.imap_connection:
-            if not self.connect_imap():
-                return False
-        
-        try:
-            result = self.imap_connection.rename(old_name, new_name)
-            success = result[0] == 'OK'
-            if success:
-                # Update current folder if it was renamed
-                if self.current_folder == old_name:
-                    self.current_folder = new_name
-                logger.logger.info(f"Renamed folder from {old_name} to {new_name}")
-            else:
-                logger.logger.error(f"Failed to rename folder from {old_name} to {new_name}")
-            return success
-        except Exception as e:
-            logger.logger.error(f"Error renaming folder {old_name} to {new_name}: {str(e)}")
-            return False
-    
-    def move_email(self, message_id: str, target_folder: str) -> bool:
-        """
-        Move an email message to another folder.
-        
-        Args:
-            message_id (str): ID of the message to move
-            target_folder (str): Name of the target folder
-            
-        Returns:
-            bool: True if move was successful, False otherwise
-        """
-        logger.logger.debug(f"Moving message {message_id} to folder {target_folder}")
-        
-        if not self.imap_connection:
-            if not self.connect_imap():
-                return False
-        
-        try:
-            # Copy message to target folder
-            result = self.imap_connection.copy(message_id, target_folder)
-            if result[0] != 'OK':
-                logger.logger.error(f"Failed to copy message to {target_folder}")
-                return False
-            
-            # Mark original for deletion
-            self.imap_connection.store(message_id, '+FLAGS', '\\Deleted')
-            
-            # Expunge to remove deleted messages
-            self.imap_connection.expunge()
-            
-            logger.logger.info(f"Successfully moved message {message_id} to {target_folder}")
-            return True
-            
-        except Exception as e:
-            logger.logger.error(f"Error moving message {message_id} to {target_folder}: {str(e)}")
-            return False
-    
-    def mark_email(self, message_id: str, flag: str, value: bool = True) -> bool:
-        """
-        Mark or unmark an email with a specific flag.
-        
-        Args:
-            message_id (str): ID of the message to mark
-            flag (str): Flag to set (e.g. '\Seen' for read, '\Flagged' for flagged)
-            value (bool): True to add flag, False to remove it
-            
-        Returns:
-            bool: True if operation was successful, False otherwise
-        """
-        logger.logger.debug(f"{'Setting' if value else 'Removing'} flag {flag} for message {message_id}")
-        
-        if not self.imap_connection:
-            if not self.connect_imap():
-                return False
-        
-        try:
-            # Add or remove flag
-            operation = '+FLAGS' if value else '-FLAGS'
-            result = self.imap_connection.store(message_id, operation, flag)
-            
-            success = result[0] == 'OK'
-            if success:
-                logger.logger.info(
-                    f"Successfully {'set' if value else 'removed'} flag {flag} "
-                    f"for message {message_id}"
-                )
-            else:
-                logger.logger.error(
-                    f"Failed to {'set' if value else 'remove'} flag {flag} "
-                    f"for message {message_id}"
-                )
-            return success
-            
-        except Exception as e:
-            logger.logger.error(
-                f"Error {'setting' if value else 'removing'} flag {flag} "
-                f"for message {message_id}: {str(e)}"
-            )
-            return False
-    
-    def mark_read(self, message_id: str) -> bool:
+    def mark_read(self, message_id: str, folder: str = 'INBOX') -> bool:
         """
         Mark an email as read.
         
         Args:
-            message_id (str): ID of the message to mark
+            message_id: Message ID to mark as read
+            folder: Folder containing the message
             
         Returns:
-            bool: True if successful, False otherwise
+            bool: True if marked successfully
         """
-        return self.mark_email(message_id, '\\Seen', True)
-    
-    def mark_unread(self, message_id: str) -> bool:
-        """
-        Mark an email as unread.
-        
-        Args:
-            message_id (str): ID of the message to mark
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        return self.mark_email(message_id, '\\Seen', False)
-    
-    def mark_flagged(self, message_id: str) -> bool:
-        """
-        Flag an email.
-        
-        Args:
-            message_id (str): ID of the message to flag
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        return self.mark_email(message_id, '\\Flagged', True)
-    
-    def mark_unflagged(self, message_id: str) -> bool:
-        """
-        Remove flag from an email.
-        
-        Args:
-            message_id (str): ID of the message to unflag
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        return self.mark_email(message_id, '\\Flagged', False)
-    
-    def sync_emails(self, account_id, folder="INBOX", error_collection=None):
-        """Synchronize emails with error collection."""
-        account = self.get_account(account_id)
-        if not account:
-            error_collection.add(f"Account {account_id} not found")
-            return
-        
         try:
-            with self._create_imap_connection(account) as imap:
-                # Select the folder
-                @collect_errors(error_collection, f"Select Folder: {folder}")
-                def select_folder():
-                    imap.select(folder)
-                select_folder()
-                
-                # Search for emails
-                @collect_errors(error_collection, "Search Emails")
-                def search_emails():
-                    return imap.search(None, "ALL")[1][0].split()
-                email_ids = search_emails()
-                
-                if not email_ids:
-                    return []
-                
-                # Fetch email data
-                emails = []
-                for email_id in email_ids:
-                    @collect_errors(error_collection, f"Fetch Email {email_id}")
-                    def fetch_email():
-                        email_data = self._fetch_email_data(imap, email_id)
-                        if email_data:
-                            emails.append(email_data)
-                    fetch_email()
-                
-                return emails
-                
+            if not self.imap_connection:
+                logger.error("No IMAP connection available")
+                return False
+            
+            # Select the folder
+            self.imap_connection.select(folder)
+            
+            # Add the \Seen flag
+            self.imap_connection.store(message_id, '+FLAGS', '\\Seen')
+            
+            logger.debug(f"Marked message {message_id} as read")
+            return True
+            
         except Exception as e:
-            error_collection.add(f"Failed to sync emails: {str(e)}")
-            return []
-    
-    @handle_errors
-    def move_email(self, account_id, message_id, target_folder, error_collection=None):
-        """Move email to another folder with error collection."""
-        account = self.get_account(account_id)
-        if not account:
-            error_collection.add(f"Account {account_id} not found")
-            return False
-        
-        try:
-            with self._create_imap_connection(account) as imap:
-                # Copy email
-                @collect_errors(error_collection, f"Copy to {target_folder}")
-                def copy_email():
-                    imap.copy(message_id, target_folder)
-                copy_email()
-                
-                # Delete from source
-                @collect_errors(error_collection, "Delete from source")
-                def delete_email():
-                    imap.store(message_id, '+FLAGS', '\\Deleted')
-                    imap.expunge()
-                delete_email()
-                
-                return True
-                
-        except Exception as e:
-            error_collection.add(f"Failed to move email: {str(e)}")
+            logger.error(f"Error marking email as read: {str(e)}")
             return False
     
-    def get_email_by_message_id(self, message_id: str) -> Optional[dict]:
-        """
-        Get an email by its message ID.
-        
-        Args:
-            message_id (str): Message ID to find
-            
-        Returns:
-            Optional[dict]: Email data if found, None otherwise
-        """
-        logger.debug(f"Looking for email with message ID: {message_id}")
-        
+    def connect(self):
+        """Connect to the email server with enhanced error handling and retry logic."""
         try:
-            # First check cache
-            if self.use_cache:
-                cached_email = self.cache.get_email_by_message_id(
-                    self.account_data['email'],
-                    message_id
+            logger.debug("Connecting to IMAP server...")
+            
+            if not self.credentials:
+                logger.error("No credentials available")
+                raise ValueError("No credentials available for connection")
+
+            # Get server settings
+            imap_host = self.credentials.get('imap_server')
+            imap_port = self.credentials.get('imap_port', 993)
+            use_ssl = self.credentials.get('imap_ssl', True)
+            
+            # Establish IMAP connection
+            if use_ssl:
+                self.imap_connection = imaplib.IMAP4_SSL(imap_host, imap_port)
+            else:
+                self.imap_connection = imaplib.IMAP4(imap_host, imap_port)
+            
+            # Handle OAuth authentication
+            if 'oauth_tokens' in self.credentials:
+                auth_string = self._build_oauth_string(
+                    self.email,
+                    self.credentials['oauth_tokens']['access_token']
                 )
-                if cached_email:
-                    logger.debug(f"Found email {message_id} in cache")
-                    return cached_email
+                self.imap_connection.authenticate('XOAUTH2', lambda x: auth_string)
+            else:
+                # Standard password authentication
+                password = self.credential_service.get_account_credentials(self.email)
+                if not password:
+                    raise ValueError("No password available for authentication")
+                self.imap_connection.login(self.email, password['password'])
             
-            # If not in cache and we're offline, return None
-            if self.is_offline:
-                logger.debug(f"Email {message_id} not found in cache (offline mode)")
-                return None
+            logger.info("Successfully connected to IMAP server")
+            return True
             
-            # Try to find in IMAP
-            if not self.imap_connection and not self.connect_imap():
-                logger.error("Could not connect to IMAP server")
-                return None
+        except imaplib.IMAP4.error as e:
+            error_msg = str(e)
+            if "AUTHENTICATIONFAILED" in error_msg:
+                logger.error("Authentication failed - invalid credentials")
+                self.notify_authentication_error()
+            else:
+                logger.error(f"IMAP error: {error_msg}")
+            return False
+        except Exception as e:
+            logger.error(f"Connection error: {str(e)}")
+            return False
+
+    def notify_authentication_error(self):
+        """Notify the user about authentication failure and provide guidance."""
+        if hasattr(self, 'notification_service'):
+            self.notification_service.show_notification(
+                "Authentication Failed",
+                "Please check your email and password/app password in the account settings.",
+                NotificationType.ERROR
+            )
+
+    def handle_authentication_error(self):
+        """Handle authentication errors and guide users through fixes."""
+        try:
+            provider = EmailProviders.detect_provider(self.email)
             
-            # Search for message ID in all folders
-            for folder in self.list_folders():
-                folder_name = folder['name']
-                if not self.select_folder(folder_name):
-                    continue
-                
-                # Search for message ID
-                try:
-                    _, messages = self.imap_connection.search(
-                        None,
-                        f'HEADER Message-ID "{message_id}"'
-                    )
-                    
-                    if messages[0]:
-                        # Found the email
-                        num = messages[0].split()[0]
-                        _, msg_data = self.imap_connection.fetch(num, "(RFC822)")
-                        email_message = email.message_from_bytes(msg_data[0][1])
-                        
-                        # Parse and return email data
-                        email_data = self._parse_email_message(email_message, num)
-                        email_data['folder'] = folder_name
-                        
-                        # Cache for future use
-                        if self.use_cache:
-                            self.cache.cache_email(
-                                self.account_data['email'],
-                                folder_name,
-                                email_data
-                            )
-                        
-                        logger.debug(f"Found email {message_id} in folder {folder_name}")
-                        return email_data
-                
-                except Exception as e:
-                    logger.error(f"Error searching for message ID in {folder_name}: {str(e)}")
-                    continue
+            if provider == Provider.GMAIL:
+                message = (
+                    "Gmail authentication failed. Please ensure:\n\n"
+                    "1. You are using OAuth authentication\n"
+                    "2. Your Google Account has IMAP enabled\n"
+                    "3. You have granted the necessary permissions\n\n"
+                    "Would you like to reconfigure this account?"
+                )
+            else:
+                message = (
+                    f"Authentication failed for {self.email}. Please ensure:\n\n"
+                    "1. Your email address is correct\n"
+                    "2. Your password/app password is correct\n"
+                    "3. IMAP is enabled for your account\n\n"
+                    "Would you like to reconfigure this account?"
+                )
             
-            logger.debug(f"Email {message_id} not found")
-            return None
+            # Show error dialog with guidance
+            response = QMessageBox.question(
+                None,
+                "Authentication Failed",
+                message,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            
+            if response == QMessageBox.StandardButton.Yes:
+                # Show account configuration dialog
+                from ui.email_account_dialog import EmailAccountDialog
+                dialog = EmailAccountDialog(parent=None)
+                dialog.email_input.setText(self.email)
+                if dialog.exec():
+                    # Retry connection with new credentials
+                    self.connect()
+                    return True
+            
+            return False
             
         except Exception as e:
-            logger.error(f"Error getting email by message ID: {str(e)}")
-            return None
-    
-    def get_account_domain(self) -> str:
-        """Get the domain of the current email account."""
-        try:
-            return self.account_data['email'].split('@')[1]
-        except:
-            return ''
+            logger.error(f"Error handling authentication: {str(e)}")
+            return False

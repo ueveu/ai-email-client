@@ -18,6 +18,7 @@ import base64
 from base64 import b64encode, b64decode
 import secrets
 import hashlib
+from utils.crypto import Crypto
 
 class CredentialService:
     """Service for securely managing user credentials using the system keyring."""
@@ -31,8 +32,25 @@ class CredentialService:
     KEY_ROTATION_INTERVAL = timedelta(days=30)  # Rotate keys every 30 days
     PBKDF2_ITERATIONS = 600000  # Increased from 100000
     
+    # Service names for keyring
+    OAUTH_SERVICE = 'ai_email_assistant_oauth'
+    PASSWORD_SERVICE = 'ai_email_assistant_password'
+    
     def __init__(self):
         """Initialize the credential service."""
+        self.crypto = Crypto()
+        
+        # Ensure data directories exist
+        self.data_dir = Path.home() / '.ai_email_assistant'
+        self.cred_dir = self.data_dir / 'credentials'
+        self.oauth_dir = self.data_dir / 'oauth'
+        
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.cred_dir.mkdir(parents=True, exist_ok=True)
+        self.oauth_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.debug("Initialized credential service")
+        
         self._ensure_master_key()
         self._fernet = None  # Lazy initialization of encryption
         
@@ -184,51 +202,36 @@ class CredentialService:
         email_hash = hashlib.sha256(email.encode()).hexdigest()
         return self.data_dir / f"{email_hash}.enc"
     
-    def store_account_credentials(self, 
-                                email: str, 
-                                credentials: Dict,
-                                provider: Optional[str] = None):
+    def store_account_credentials(self, email: str, credentials: dict, provider: str = None) -> bool:
         """
-        Securely store email account credentials.
+        Store credentials for an email account.
         
         Args:
-            email (str): Email address as the identifier
-            credentials (Dict): Dictionary containing credentials (password, tokens, etc.)
-            provider (str, optional): Email provider name
+            email: Email address
+            credentials: Credentials dictionary (either OAuth tokens or password)
+            provider: Optional provider name
+            
+        Returns:
+            bool: True if stored successfully
         """
         try:
-            # Add timestamp for OAuth tokens
             if 'access_token' in credentials:
-                credentials['stored_at'] = datetime.now().isoformat()
-                if 'expires_in' in credentials:
-                    expires_at = datetime.now() + timedelta(seconds=credentials['expires_in'])
-                    credentials['expires_at'] = expires_at.isoformat()
-            
-            # Add metadata
-            credentials['_metadata'] = {
-                'email': email,
-                'provider': provider,
-                'last_modified': datetime.now().isoformat(),
-                'version': '2.0'  # Track credential format version
-            }
-            
-            # Encrypt credentials
-            creds_json = json.dumps(credentials)
-            encrypted_creds = self.fernet.encrypt(creds_json.encode())
-            
-            # Store in file
-            cred_path = self._get_credential_path(email)
-            with open(cred_path, 'wb') as f:
-                f.write(encrypted_creds)
-            
-            # Store metadata separately
-            self._store_account_metadata(email, provider)
-            
-            logger.info(f"Stored credentials for {email}")
-            
+                # Store OAuth tokens
+                self.store_oauth_tokens(email, credentials)
+                logger.info(f"Stored credentials for {email}")
+                return True
+            elif 'password' in credentials:
+                # Store password
+                self.store_password(email, credentials['password'])
+                logger.info(f"Stored credentials for {email}")
+                return True
+            else:
+                logger.error(f"Invalid credentials format for {email}")
+                return False
+                
         except Exception as e:
             logger.error(f"Error storing credentials for {email}: {str(e)}")
-            raise
+            return False
     
     def get_account_credentials(self, email: str) -> Optional[Dict]:
         """
@@ -359,43 +362,110 @@ class CredentialService:
             logger.error(f"Error verifying credentials for {email}: {str(e)}")
             return False
     
-    def get_email_credentials(self, email: str) -> Optional[Dict]:
+    def get_email_credentials(self, email: str) -> Optional[dict]:
         """
-        Get email account credentials (password-based).
+        Get credentials for an email account.
         
         Args:
-            email (str): Email address
+            email: Email address
             
         Returns:
-            Optional[Dict]: Credentials dictionary with password if found
+            dict: Credentials dictionary or None if not found
         """
         try:
-            credentials = self.get_account_credentials(email)
-            if credentials and 'password' in credentials:
-                return credentials
+            # Check if we have OAuth tokens
+            oauth_tokens = self.get_oauth_tokens(email)
+            if oauth_tokens:
+                return {
+                    'type': 'oauth',
+                    'tokens': oauth_tokens
+                }
+            
+            # Check for stored password
+            password = self.get_password(email)
+            if password:
+                return {
+                    'type': 'password',
+                    'password': password
+                }
+            
             return None
+            
         except Exception as e:
-            logger.error(f"Error getting email credentials for {email}: {str(e)}")
+            logger.error(f"Error getting credentials for {email}: {str(e)}")
             return None
     
-    def get_oauth_tokens(self, email: str) -> Optional[Dict]:
-        """
-        Get OAuth tokens for an email account.
-        
-        Args:
-            email (str): Email address
-            
-        Returns:
-            Optional[Dict]: OAuth tokens dictionary if found
-        """
+    def get_oauth_tokens(self, email: str) -> Optional[dict]:
+        """Get OAuth tokens for an email account."""
         try:
-            credentials = self.get_account_credentials(email)
-            if credentials and 'access_token' in credentials:
-                return credentials
-            return None
+            # Get token file path
+            token_file = self.oauth_dir / f"{email}.json"
+            if not token_file.exists():
+                return None
+            
+            # Read and decrypt tokens
+            with open(token_file, 'r') as f:
+                encrypted_data = f.read()
+            
+            # Decrypt and parse tokens
+            decrypted_data = self.crypto.decrypt(encrypted_data)
+            return json.loads(decrypted_data)
+            
         except Exception as e:
             logger.error(f"Error getting OAuth tokens for {email}: {str(e)}")
             return None
+    
+    def store_oauth_tokens(self, email: str, tokens: dict) -> bool:
+        """Store OAuth tokens for an email account."""
+        try:
+            # Encrypt tokens
+            encrypted_data = self.crypto.encrypt(json.dumps(tokens))
+            
+            # Store in file
+            token_file = self.oauth_dir / f"{email}.json"
+            with open(token_file, 'w') as f:
+                f.write(encrypted_data)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error storing OAuth tokens for {email}: {str(e)}")
+            return False
+    
+    def get_password(self, email: str) -> Optional[str]:
+        """Get password for an email account."""
+        try:
+            # Get password file path
+            pass_file = self.cred_dir / f"{email}.pwd"
+            if not pass_file.exists():
+                return None
+            
+            # Read and decrypt password
+            with open(pass_file, 'r') as f:
+                encrypted_data = f.read()
+            
+            return self.crypto.decrypt(encrypted_data)
+            
+        except Exception as e:
+            logger.error(f"Error getting password for {email}: {str(e)}")
+            return None
+    
+    def store_password(self, email: str, password: str) -> bool:
+        """Store password for an email account."""
+        try:
+            # Encrypt password
+            encrypted_data = self.crypto.encrypt(password)
+            
+            # Store in file
+            pass_file = self.cred_dir / f"{email}.pwd"
+            with open(pass_file, 'w') as f:
+                f.write(encrypted_data)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error storing password for {email}: {str(e)}")
+            return False
     
     def update_token_expiry(self, email: str, expires_in: int):
         """

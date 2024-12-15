@@ -82,10 +82,12 @@ class EmailComposeDialog(QDialog):
         
         self.send_button = QPushButton("Send")
         self.send_button.clicked.connect(self.send_email)
+        self.send_button.setStyleSheet("QPushButton:hover { background-color: #308CC6; color: white; }")
         button_layout.addWidget(self.send_button)
         
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.clicked.connect(self.reject)
+        self.cancel_button.setStyleSheet("QPushButton:hover { background-color: #F44336; color: white; }")
         button_layout.addWidget(self.cancel_button)
         
         layout.addLayout(button_layout)

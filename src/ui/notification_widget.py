@@ -4,7 +4,7 @@ Widget for displaying application notifications.
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                            QPushButton, QProgressBar, QScrollArea)
-from PyQt6.QtCore import Qt, pyqtSlot
+from PyQt6.QtCore import Qt, pyqtSlot, QPropertyAnimation
 from PyQt6.QtGui import QIcon, QColor, QPalette
 from services.notification_service import NotificationService, Notification, NotificationType
 from typing import Dict
@@ -17,6 +17,18 @@ class NotificationItemWidget(QWidget):
         super().__init__(parent)
         self.notification = notification
         self.setup_ui()
+        
+        # Add fade-in animation
+        self.setWindowOpacity(0)
+        self.fade_in()
+    
+    def fade_in(self):
+        """Animate fade-in effect for the notification."""
+        self.animation = QPropertyAnimation(self, b"windowOpacity")
+        self.animation.setDuration(500)
+        self.animation.setStartValue(0)
+        self.animation.setEndValue(1)
+        self.animation.start()
     
     def setup_ui(self):
         """Set up the notification item UI."""
@@ -33,7 +45,7 @@ class NotificationItemWidget(QWidget):
             NotificationType.SUCCESS: "fa.check-circle",
             NotificationType.WARNING: "fa.exclamation-triangle",
             NotificationType.ERROR: "fa.times-circle",
-            NotificationType.PROGRESS: "fa.spinner"
+            NotificationType.PROGRESS: "fa.spinner fa-spin"
         }
         color_map = {
             NotificationType.INFO: "#2196F3",

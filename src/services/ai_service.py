@@ -327,7 +327,7 @@ class AIService:
             api_key: New API key
         """
         try:
-            self.api_key_service.save_api_key('gemini', api_key)
+            self.api_key_service.store_api_key('gemini', api_key)
             self._initialize_gemini()
             logger.info("Updated Gemini API key")
             
@@ -899,3 +899,89 @@ class AIService:
         except Exception as e:
             logger.error(f"Error calculating time span: {str(e)}")
             return {'duration': None, 'start': None, 'end': None}
+    
+    def analyze_email(self, email_text: str) -> Dict:
+        """
+        Analyze email content and generate insights.
+        
+        Args:
+            email_text: Email content to analyze
+            
+        Returns:
+            Dict: Analysis results including reply suggestions
+        """
+        try:
+            logger.debug("Generating AI analysis...")
+            
+            if not self.model:
+                return {
+                    'reply_suggestions': 'AI analysis not available - Gemini API key not configured'
+                }
+            
+            # Generate analysis prompt
+            prompt = f"""
+            Analyze this email and provide:
+            1. A brief summary
+            2. Key points or action items
+            3. Suggested reply options
+            4. Tone analysis
+            
+            Email content:
+            {email_text}
+            """
+            
+            # Generate analysis
+            response = self.model.generate_content(prompt)
+            
+            if not response.text:
+                return {
+                    'reply_suggestions': 'Failed to generate analysis'
+                }
+            
+            return {
+                'reply_suggestions': response.text
+            }
+            
+        except Exception as e:
+            logger.error(f"Error analyzing email: {str(e)}")
+            return {
+                'reply_suggestions': f'Error generating analysis: {str(e)}'
+            }
+    
+    def generate_reply(self, email_text: str, style: str = 'professional') -> Optional[str]:
+        """
+        Generate an email reply.
+        
+        Args:
+            email_text: Original email content
+            style: Desired reply style (professional, casual, formal)
+            
+        Returns:
+            Optional[str]: Generated reply or None if error
+        """
+        try:
+            if not self.model:
+                return None
+            
+            # Generate reply prompt
+            prompt = f"""
+            Generate a {style} reply to this email:
+            
+            Original email:
+            {email_text}
+            
+            Reply should be:
+            - Clear and concise
+            - Maintain appropriate tone
+            - Address all points
+            - Include proper greeting and closing
+            """
+            
+            # Generate reply
+            response = self.model.generate_content(prompt)
+            
+            return response.text if response.text else None
+            
+        except Exception as e:
+            logger.error(f"Error generating reply: {str(e)}")
+            return None

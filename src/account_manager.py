@@ -2,13 +2,12 @@
 Manages email accounts and their configurations.
 """
 
-import json
-from pathlib import Path
 from typing import List, Dict, Optional
 from utils.logger import logger
 from utils.error_handler import ErrorCollection, handle_errors, collect_errors
 from security.credential_manager import CredentialManager
 from email_providers import EmailProviders, Provider
+from config import Config
 
 class AccountManager:
     """Manages email accounts and their configurations."""
@@ -16,30 +15,7 @@ class AccountManager:
     def __init__(self):
         """Initialize account manager."""
         self.credential_manager = CredentialManager()
-        self.config_dir = Path.home() / '.ai_email_assistant' / 'config'
-        self.config_dir.mkdir(parents=True, exist_ok=True)
-        self.accounts_file = self.config_dir / 'accounts.json'
-        self._load_accounts()
-    
-    def _load_accounts(self):
-        """Load accounts from file."""
-        try:
-            if self.accounts_file.exists():
-                with open(self.accounts_file, 'r') as f:
-                    self.accounts = json.load(f)
-            else:
-                self.accounts = {}
-        except Exception as e:
-            logger.error(f"Error loading accounts: {str(e)}")
-            self.accounts = {}
-    
-    def _save_accounts(self):
-        """Save accounts to file."""
-        try:
-            with open(self.accounts_file, 'w') as f:
-                json.dump(self.accounts, f, indent=4)
-        except Exception as e:
-            logger.error(f"Error saving accounts: {str(e)}")
+        self.config = Config()
     
     def get_all_accounts(self) -> List[Dict]:
         """
@@ -49,13 +25,7 @@ class AccountManager:
             List[Dict]: List of all account configurations
         """
         try:
-            return [
-                {
-                    'email': email,
-                    **account_data
-                }
-                for email, account_data in self.accounts.items()
-            ]
+            return self.config.get_accounts()
         except Exception as e:
             logger.error(f"Error getting all accounts: {str(e)}")
             return []
@@ -71,10 +41,8 @@ class AccountManager:
             bool: True if account was added successfully
         """
         try:
-            email = account_data['email']
-            self.accounts[email] = account_data
-            self._save_accounts()
-            logger.info(f"Added account: {email}")
+            self.config.add_account(account_data)
+            logger.info(f"Added account: {account_data['email']}")
             return True
         except Exception as e:
             logger.error(f"Error adding account: {str(e)}")
@@ -90,7 +58,7 @@ class AccountManager:
         Returns:
             Optional[Dict]: Account configuration if found
         """
-        return self.accounts.get(email)
+        return self.config.get_account(email)
     
     def update_account(self, email: str, account_data: Dict) -> bool:
         """
@@ -104,12 +72,9 @@ class AccountManager:
             bool: True if account was updated successfully
         """
         try:
-            if email in self.accounts:
-                self.accounts[email] = account_data
-                self._save_accounts()
-                logger.info(f"Updated account: {email}")
-                return True
-            return False
+            self.config.update_account(email, account_data)
+            logger.info(f"Updated account: {email}")
+            return True
         except Exception as e:
             logger.error(f"Error updating account: {str(e)}")
             return False
@@ -125,16 +90,14 @@ class AccountManager:
             bool: True if account was removed successfully
         """
         try:
-            if email in self.accounts:
-                del self.accounts[email]
-                self._save_accounts()
-                
-                # Remove credentials
-                self.credential_manager.delete_account_credentials(email)
-                
-                logger.info(f"Removed account: {email}")
-                return True
-            return False
+            # Remove from config
+            self.config.remove_account(email)
+            
+            # Remove credentials
+            self.credential_manager.delete_account_credentials(email)
+            
+            logger.info(f"Removed account: {email}")
+            return True
         except Exception as e:
             logger.error(f"Error removing account: {str(e)}")
             return False
@@ -146,7 +109,7 @@ class AccountManager:
         Returns:
             List[Dict]: List of account configurations
         """
-        return list(self.accounts.values())
+        return self.config.get_accounts()
     
     def get_account_credentials(self, email: str) -> Optional[Dict]:
         """

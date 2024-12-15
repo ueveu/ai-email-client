@@ -66,6 +66,14 @@ class EmailCache:
                 )
             """)
             
+            # Create accounts table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS accounts (
+                    email TEXT PRIMARY KEY,
+                    last_sync TEXT
+                )
+            """)
+            
             # Create indexes
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_emails_account
@@ -357,3 +365,28 @@ class EmailCache:
         except Exception as e:
             logger.error(f"Error getting cached email by message ID: {str(e)}")
             return None
+    
+    def initialize_account(self, email: str):
+        """
+        Initialize cache for an email account.
+        
+        Args:
+            email: Email address to initialize cache for
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Create account-specific tables if needed
+                cursor.execute("""
+                    INSERT OR IGNORE INTO accounts (email, last_sync)
+                    VALUES (?, datetime('now'))
+                """, (email,))
+                
+                conn.commit()
+                
+            logger.debug(f"Initialized cache for account: {email}")
+            
+        except Exception as e:
+            logger.error(f"Error initializing account cache: {str(e)}")
+            raise

@@ -29,6 +29,7 @@ class ProviderConfig:
     """Email provider configuration."""
     name: str
     domain: str  # Primary domain for the provider (e.g., gmail.com)
+    alt_domains: List[str]  # Alternative domains (e.g., hotmail.com for Outlook)
     imap_server: str
     imap_port: int
     imap_ssl: bool
@@ -123,6 +124,7 @@ class EmailProviders:
         Provider.GMAIL: ProviderConfig(
             name="Gmail",
             domain="gmail.com",
+            alt_domains=[],  # Gmail only uses gmail.com
             imap_server="imap.gmail.com",
             imap_port=993,
             imap_ssl=True,
@@ -147,6 +149,7 @@ class EmailProviders:
         Provider.OUTLOOK: ProviderConfig(
             name="Outlook",
             domain="outlook.com",
+            alt_domains=["hotmail.com", "live.com", "msn.com"],
             imap_server="outlook.office365.com",
             imap_port=993,
             imap_ssl=True,
@@ -170,6 +173,7 @@ class EmailProviders:
         Provider.YAHOO: ProviderConfig(
             name="Yahoo Mail",
             domain="yahoo.com",
+            alt_domains=["ymail.com", "yahoo.co.uk", "yahoo.co.jp", "yahoo.de", "yahoo.fr"],
             imap_server="imap.mail.yahoo.com",
             imap_port=993,
             imap_ssl=True,
@@ -377,13 +381,12 @@ class EmailProviders:
             Provider: Detected provider or CUSTOM if unknown
         """
         email = email.lower()
+        domain = email.split('@')[-1]
         
-        if re.match(r".*@gmail\.com$", email):
-            return Provider.GMAIL
-        elif re.match(r".*@(outlook\.com|hotmail\.com|live\.com)$", email):
-            return Provider.OUTLOOK
-        elif re.match(r".*@yahoo\.(com|co\.[a-z]{2})$", email):
-            return Provider.YAHOO
+        # Check each provider's domains
+        for provider, config in cls.PROVIDERS.items():
+            if domain == config.domain or domain in config.alt_domains:
+                return provider
         
         return Provider.CUSTOM
     
